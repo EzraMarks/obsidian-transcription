@@ -22,6 +22,9 @@ interface TranscriptionSettings {
     initialPrompt: string;
     vadFilter: boolean;
     wordTimestamps: boolean;
+    // OpenAI settings
+    openaiKey: string;
+    postProcessingPrompt: string;
 }
 
 const SWIFTINK_AUTH_CALLBACK =
@@ -53,6 +56,9 @@ const DEFAULT_SETTINGS: TranscriptionSettings = {
     initialPrompt: "",
     vadFilter: false, // this doesn't seem to do anything in the current version of the Whisper ASR server
     wordTimestamps: false,
+    // OpenAI settings
+    openaiKey: "",
+    postProcessingPrompt: "",
 };
 
 const LANGUAGES = {
@@ -174,6 +180,7 @@ class TranscriptionSettingTab extends PluginSettingTab {
                 dropdown
                     .addOption("swiftink", "Swiftink")
                     .addOption("whisper_asr", "Whisper ASR")
+                    .addOption("openai", "OpenAI")
                     .setValue(this.plugin.settings.transcriptionEngine)
                     .onChange(async (value) => {
                         this.plugin.settings.transcriptionEngine = value;
@@ -181,6 +188,7 @@ class TranscriptionSettingTab extends PluginSettingTab {
                         this.updateSettingVisibility(".swiftink-settings", value === "swiftink");
                         this.updateSettingVisibility(".whisper-asr-settings", value === "whisper_asr");
                         this.updateSettingVisibility(".word-timestamps-setting", value === "whisper_asr" && this.plugin.settings.timestamps);
+                        this.updateSettingVisibility(".openai-settings", value === "openai");
                     }),
             );
 
@@ -492,6 +500,37 @@ class TranscriptionSettingTab extends PluginSettingTab {
                     }),
             );
 
+        new Setting(containerEl)
+        .setName("OpenAI Settings")
+        .setClass("openai-settings")
+        .setHeading();
+
+        new Setting(containerEl)
+        .setName("OpenAI key")
+        .setClass("openai-settings")
+        .addText((text) =>
+            text
+                .setPlaceholder(DEFAULT_SETTINGS.openaiKey)
+                .setValue(this.plugin.settings.openaiKey)
+                .onChange(async (value) => {
+                    this.plugin.settings.openaiKey = value;
+                    await this.plugin.saveSettings();
+                }),
+        );
+
+        new Setting(containerEl)
+        .setName("Post-processing prompt")
+        .setClass("openai-settings")
+        .addTextArea((text) =>
+            text
+                .setPlaceholder(DEFAULT_SETTINGS.postProcessingPrompt)
+                .setValue(this.plugin.settings.postProcessingPrompt)
+                .onChange(async (value) => {
+                    this.plugin.settings.postProcessingPrompt = value;
+                    await this.plugin.saveSettings();
+                }),
+        );
+
         new Setting(containerEl).setName("Advanced Settings").setHeading();
 
         new Setting(containerEl)
@@ -544,6 +583,7 @@ class TranscriptionSettingTab extends PluginSettingTab {
         // Logic! (the incredible true story)
         this.updateSettingVisibility(".swiftink-settings", this.plugin.settings.transcriptionEngine === "swiftink");
         this.updateSettingVisibility(".whisper-asr-settings", this.plugin.settings.transcriptionEngine === "whisper_asr");
+        this.updateSettingVisibility(".openai-settings", this.plugin.settings.transcriptionEngine === "openai");
 
         this.updateSettingVisibility(".depends-on-timestamps", this.plugin.settings.timestamps);
         this.updateSettingVisibility(".word-timestamps-setting", this.plugin.settings.transcriptionEngine === "whisper_asr" && this.plugin.settings.timestamps);

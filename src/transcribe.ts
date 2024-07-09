@@ -24,6 +24,7 @@ export class TranscriptionEngine {
     transcription_engines: { [key: string]: TranscriptionBackend } = {
         swiftink: this.getTranscriptionSwiftink,
         whisper_asr: this.getTranscriptionWhisperASR,
+        openai: this.getTranscriptionOpenAI,
     };
 
     constructor(
@@ -206,6 +207,95 @@ export class TranscriptionEngine {
         }
         // If all URLs fail, reject the promise with a generic error or the last specific error caught
         return Promise.reject("All Whisper ASR URLs failed");
+    }
+    
+    async getTranscriptionOpenAI(file: TFile): Promise<string> {
+        const WHISPER_API_URL = 'https://api.openai.com/v1/audio/transcriptions';
+
+        const { openaiKey } = this.settings;
+    
+        // Read the file content
+        const fileContent = await this.vault.readBinary(file);
+    
+        // Create FormData
+        const formData = new FormData();
+        formData.append('file', new Blob([fileContent]), file.name);
+        formData.append('model', 'whisper-1');
+    
+        // Prepare headers
+        const headers = {
+            "Authorization": `Bearer ${openaiKey}`
+        };
+    
+        try {
+            // Make the POST request using fetch
+            const response = await fetch(WHISPER_API_URL, {
+                method: 'POST',
+                headers: headers,
+                body: formData
+            });
+    
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+    
+            const jsonResponse = await response.json();
+            const textResponse = jsonResponse.text;
+
+            if (this.settings.debug) {
+                console.log(`Raw transcription: ${textResponse}`)
+            }
+
+            // Return the transcribed text
+            return this.postProcessTranscription(jsonResponse.text);
+    
+        } catch (error) {
+            console.error("Error with URL:", WHISPER_API_URL, error);
+            throw new Error("Failed to transcribe audio");
+        }
+    }
+
+    async postProcessTranscription(transcription: string): Promise<string> {
+        const CHATGPT_API_URL = 'https://api.openai.com/v1/chat/completions';
+
+        const { openaiKey, postProcessingPrompt } = this.settings;
+
+        // Create the request payload
+        const payload = {
+            model: 'gpt-3.5-turbo',
+            messages: [
+                { role: 'system', content: postProcessingPrompt },
+                { role: 'user', content: transcription }
+            ]
+        };
+
+        // Prepare headers
+        const headers = {
+            "Authorization": `Bearer ${openaiKey}`,
+            "Content-Type": "application/json"
+        };
+
+        try {
+            // Make the POST request using fetch
+            const response = await fetch(CHATGPT_API_URL, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const jsonResponse = await response.json();
+
+            // Return the ChatGPT response text
+            return jsonResponse.choices[0].message.content;
+
+        } catch (error) {
+            console.error("Error with URL:", CHATGPT_API_URL, error);
+            throw new Error("Failed to get response from ChatGPT");
+        }
     }
 
     async getTranscriptionSwiftink(file: TFile): Promise<string> {
