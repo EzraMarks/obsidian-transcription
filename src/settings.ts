@@ -25,6 +25,7 @@ interface TranscriptionSettings {
     // OpenAI settings
     openaiKey: string;
     postProcessingPrompt: string;
+    openaiModel: string;
 }
 
 const SWIFTINK_AUTH_CALLBACK =
@@ -59,6 +60,7 @@ const DEFAULT_SETTINGS: TranscriptionSettings = {
     // OpenAI settings
     openaiKey: "",
     postProcessingPrompt: "",
+    openaiModel: "",
 };
 
 const LANGUAGES = {
@@ -527,6 +529,21 @@ class TranscriptionSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.postProcessingPrompt)
                 .onChange(async (value) => {
                     this.plugin.settings.postProcessingPrompt = value;
+                    await this.plugin.saveSettings();
+                }),
+        );
+
+        new Setting(containerEl)
+        .setName("Model")
+        .setDesc("The OpenAI language model to use")
+        .setClass("openai-settings")
+        .addDropdown((dropdown) =>
+            dropdown
+                .addOption("gpt-3.5-turbo", "GPT-3.5 Turbo")
+                .addOption("gpt-4o", "GPT-4o")
+                .setValue(this.plugin.settings.openaiModel)
+                .onChange(async (value) => {
+                    this.plugin.settings.openaiModel = value;
                     await this.plugin.saveSettings();
                 }),
         );

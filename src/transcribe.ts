@@ -258,11 +258,11 @@ export class TranscriptionEngine {
     async postProcessTranscription(transcription: string): Promise<string> {
         const CHATGPT_API_URL = 'https://api.openai.com/v1/chat/completions';
 
-        const { openaiKey, postProcessingPrompt } = this.settings;
+        const { openaiKey, postProcessingPrompt, openaiModel } = this.settings;
 
         // Create the request payload
         const payload = {
-            model: 'gpt-3.5-turbo',
+            model: openaiModel,
             messages: [
                 { role: 'system', content: postProcessingPrompt },
                 { role: 'user', content: transcription }
