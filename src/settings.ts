@@ -24,6 +24,7 @@ interface TranscriptionSettings {
     wordTimestamps: boolean;
     // OpenAI settings
     openaiKey: string;
+    findAndReplace: string; // Colon-delimited format, with newlines separating pairs of words. E.g. "Maddie: Maddy\nRhea: Riya"
     postProcessingPrompt: string;
     openaiModel: string;
 }
@@ -59,6 +60,7 @@ const DEFAULT_SETTINGS: TranscriptionSettings = {
     wordTimestamps: false,
     // OpenAI settings
     openaiKey: "",
+    findAndReplace: "",
     postProcessingPrompt: "",
     openaiModel: "",
 };
@@ -529,6 +531,20 @@ class TranscriptionSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.postProcessingPrompt)
                 .onChange(async (value) => {
                     this.plugin.settings.postProcessingPrompt = value;
+                    await this.plugin.saveSettings();
+                }),
+        );
+
+        new Setting(containerEl)
+        .setName("Find and Replace")
+        .setDesc("A colon-delimited list of words or phrases to automatically find and replace (case-sensitive). Each line should be of the format 'OldWord: NewWord' without quotation marks, with each pair separated by a newline.")
+        .setClass("openai-settings")
+        .addTextArea((text) =>
+            text
+                .setPlaceholder("Maddie: Maddy\nRhea: Riya")
+                .setValue(this.plugin.settings.findAndReplace)
+                .onChange(async (value) => {
+                    this.plugin.settings.findAndReplace = value;
                     await this.plugin.saveSettings();
                 }),
         );
