@@ -246,13 +246,54 @@ export class TranscriptionEngine {
                 console.log(`Raw transcription: ${textResponse}`)
             }
 
+            const textAfterFindAndReplace = this.applyFindAndReplace(textResponse);
+
             // Return the transcribed text
-            return this.postProcessTranscription(jsonResponse.text);
+            return this.postProcessTranscription(textAfterFindAndReplace);
     
         } catch (error) {
             console.error("Error with URL:", WHISPER_API_URL, error);
             throw new Error("Failed to transcribe audio");
         }
+    }
+
+    applyFindAndReplace(transcription: string): string {
+        const findAndReplaceMap = this.getFindAndReplaceMap();
+        let modifiedText = transcription;
+      
+        // Loop through each find-and-replace pair in the map
+        for (const [find, replace] of Object.entries(findAndReplaceMap)) {
+            // Use word boundaries (\b) to ensure we only match whole words
+            const regex = new RegExp(`\\b${this.escapeRegExp(find)}\\b`, "g");
+            modifiedText = modifiedText.replace(regex, replace);
+        }
+      
+        return modifiedText;
+      }
+
+      escapeRegExp(str: string): string {
+        return str.replace(/[.*+?^=!:${}()|\[\]\/\\]/g, '\\$&'); // Escape special characters for RegExp
+      }
+
+    getFindAndReplaceMap(): {[key: string]: string} {
+        const { findAndReplace } = this.settings;
+
+        const lines = findAndReplace.split("\n"); // Split input by newlines
+        const result: { [key: string]: string } = {};
+      
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (trimmedLine) {
+            const [key, value] = trimmedLine.split(":").map((part) => part.trim());
+            if (key && value) {
+              result[key] = value;
+            } else {
+              console.warn(`Skipping invalid line: ${line}`);
+            }
+          }
+        }
+
+        return result;
     }
 
     async postProcessTranscription(transcription: string): Promise<string> {
