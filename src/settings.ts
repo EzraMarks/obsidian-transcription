@@ -27,6 +27,7 @@ interface TranscriptionSettings {
     findAndReplace: string; // Colon-delimited format, with newlines separating pairs of words. E.g. "Maddie: Maddy\nRhea: Riya"
     postProcessingPrompt: string;
     openaiModel: string;
+    openaiCustomModel: string;
 }
 
 const SWIFTINK_AUTH_CALLBACK =
@@ -63,6 +64,7 @@ const DEFAULT_SETTINGS: TranscriptionSettings = {
     findAndReplace: "",
     postProcessingPrompt: "",
     openaiModel: "",
+    openaiCustomModel: "",
 };
 
 const LANGUAGES = {
@@ -557,9 +559,25 @@ class TranscriptionSettingTab extends PluginSettingTab {
             dropdown
                 .addOption("gpt-3.5-turbo", "GPT-3.5 Turbo")
                 .addOption("gpt-4o", "GPT-4o")
+                .addOption("custom", "Custom")
                 .setValue(this.plugin.settings.openaiModel)
                 .onChange(async (value) => {
                     this.plugin.settings.openaiModel = value;
+                    await this.plugin.saveSettings();
+                    this.updateSettingVisibility(".openai-settings-custom-model", value === "custom");
+                }),
+        );
+        
+        new Setting(containerEl)
+        .setName("Custom Model")
+        .setDesc("Custom OpenAI language model to use")
+        .setClass("openai-settings-custom-model")
+        .addText((text) =>
+            text
+                .setPlaceholder(DEFAULT_SETTINGS.openaiCustomModel)
+                .setValue(this.plugin.settings.openaiCustomModel)
+                .onChange(async (value) => {
+                    this.plugin.settings.openaiCustomModel = value;
                     await this.plugin.saveSettings();
                 }),
         );
@@ -623,6 +641,8 @@ class TranscriptionSettingTab extends PluginSettingTab {
 
         this.updateSettingVisibility(".swiftink-unauthed-only", this.plugin.user === null);
         this.updateSettingVisibility(".swiftink-authed-only", this.plugin.user !== null);
+
+        this.updateSettingVisibility(".openai-settings-custom-model", this.plugin.settings.openaiModel === "custom");
     }
 
 
