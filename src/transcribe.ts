@@ -299,15 +299,27 @@ export class TranscriptionEngine {
     async postProcessTranscription(transcription: string): Promise<string> {
         const CHATGPT_API_URL = 'https://api.openai.com/v1/chat/completions';
 
-        const { openaiKey, postProcessingPrompt, openaiModel, openaiCustomModel } = this.settings;
+        const {
+            openaiKey,
+            postProcessingSystemPrompt,
+            postProcessingUserPrompt,
+            openaiModel,
+            openaiCustomModel,
+        } = this.settings;
+
+        const userMessageContent = postProcessingUserPrompt
+            ? postProcessingUserPrompt + "\n\n" + transcription
+            : transcription;
 
         // Create the request payload
         const payload = {
             model: openaiModel === "custom" ? openaiCustomModel : openaiModel,
             messages: [
-                { role: 'system', content: postProcessingPrompt },
-                { role: 'user', content: transcription }
-            ]
+                ...(postProcessingSystemPrompt
+                    ? [{ role: "system", content: postProcessingSystemPrompt }]
+                    : []),
+                { role: "user", content: userMessageContent },
+            ],
         };
 
         // Prepare headers
