@@ -109,24 +109,21 @@ export default class Transcription extends Plugin {
         abortController: AbortController | null
     ) {
         try {
-
             if (this.settings.debug) console.log("Transcribing " + file.path);
 
-            const transcription =
-                await this.transcriptionEngine.getTranscription(file);
-
-
+            const transcription = await this.transcriptionEngine.getTranscription(file);
 
             let fileText = await this.app.vault.read(parent_file);
-            const fileLinkString = this.app.metadataCache.fileToLinktext(
-                file,
-                parent_file.path
-            );
+            const fileLinkString = this.app.metadataCache.fileToLinktext(file, parent_file.path);
             const fileLinkStringTagged = `[[${fileLinkString}]]`;
 
-            const startReplacementIndex =
-                fileText.indexOf(fileLinkStringTagged) +
-                fileLinkStringTagged.length;
+            const startReplacementIndex = fileText.indexOf(fileLinkStringTagged) + fileLinkStringTagged.length;
+
+            fileText = [
+                fileText.slice(0, startReplacementIndex),
+                `\n${transcription}`,
+                fileText.slice(startReplacementIndex),
+            ].join("");
 
             //check if abortion signal is aborted
 
