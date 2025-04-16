@@ -61,10 +61,9 @@ export class TranscriptionEngine {
             }
 
             const cleaned = this.applyFindAndReplace(transcription);
-            const postProcessed = this.postProcessTranscription(cleaned);
 
             // Execute the LLM prompt chain using the final transcription
-            return await this.runPromptChain(await postProcessed, file);
+            return await this.runPromptChain(await cleaned, file);
         } catch (error) {
             console.error("Error with Whisper transcription:", error);
             throw error;
@@ -123,53 +122,6 @@ export class TranscriptionEngine {
         } catch (error) {
             console.error("Error while reading or parsing the prompt chain file:", error);
             throw new Error("Failed to parse prompt chain settings");
-        }
-    }
-
-    async postProcessTranscription(transcription: string): Promise<string> {
-        const CHATGPT_API_URL = "https://api.openai.com/v1/chat/completions";
-
-        const { openaiKey, postProcessingSystemPrompt, postProcessingUserPrompt, openaiModel, openaiCustomModel } =
-            this.settings;
-
-        const userMessageContent = postProcessingUserPrompt
-            ? postProcessingUserPrompt + "\n\n" + transcription
-            : transcription;
-
-        // Create the request payload
-        const payload = {
-            model: openaiModel === "custom" ? openaiCustomModel : openaiModel,
-            messages: [
-                ...(postProcessingSystemPrompt ? [{ role: "system", content: postProcessingSystemPrompt }] : []),
-                { role: "user", content: userMessageContent },
-            ],
-        };
-
-        // Prepare headers
-        const headers = {
-            Authorization: `Bearer ${openaiKey}`,
-            "Content-Type": "application/json",
-        };
-
-        try {
-            // Make the POST request using fetch
-            const response = await fetch(CHATGPT_API_URL, {
-                method: "POST",
-                headers: headers,
-                body: JSON.stringify(payload),
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const jsonResponse = await response.json();
-
-            // Return the ChatGPT response text
-            return jsonResponse.choices[0].message.content;
-        } catch (error) {
-            console.error("Error with URL:", CHATGPT_API_URL, error);
-            throw new Error("Failed to get response from ChatGPT");
         }
     }
 

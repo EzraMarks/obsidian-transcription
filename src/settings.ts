@@ -6,8 +6,6 @@ interface TranscriptionSettings {
     verbosity: number;
     openaiKey: string;
     findAndReplace: string; // Colon-delimited format, with newlines separating pairs of words. E.g. "Maddie: Maddy\nRhea: Riya"
-    postProcessingSystemPrompt: string;
-    postProcessingUserPrompt: string;
     promptChainSpecPath: string;
     openaiModel: string;
     openaiCustomModel: string;
@@ -18,8 +16,6 @@ const DEFAULT_SETTINGS: TranscriptionSettings = {
     verbosity: 1,
     openaiKey: "",
     findAndReplace: "",
-    postProcessingSystemPrompt: "",
-    postProcessingUserPrompt: "",
     promptChainSpecPath: "",
     openaiModel: "",
     openaiCustomModel: "",
@@ -92,34 +88,6 @@ class TranscriptionSettingTab extends PluginSettingTab {
                 this.plugin.settings.promptChainSpecPath = value;
                 await this.plugin.saveSettings();
             }),
-        );
-
-        new Setting(containerEl)
-        .setName("Post-processing system prompt")
-        .setDesc("The OpenAI system prompt")
-        .setClass("openai-settings")
-        .addTextArea((text) =>
-            text
-                .setPlaceholder(DEFAULT_SETTINGS.postProcessingSystemPrompt)
-                .setValue(this.plugin.settings.postProcessingSystemPrompt)
-                .onChange(async (value) => {
-                    this.plugin.settings.postProcessingSystemPrompt = value;
-                    await this.plugin.saveSettings();
-                }),
-        );
-
-        new Setting(containerEl)
-        .setName("Post-processing user prompt")
-        .setDesc("The OpenAI user prompt. The journal contents will be appended after the user prompt.")
-        .setClass("openai-settings")
-        .addTextArea((text) =>
-            text
-                .setPlaceholder("Here is my journal entry. Please clean it up:")
-                .setValue(this.plugin.settings.postProcessingUserPrompt)
-                .onChange(async (value) => {
-                    this.plugin.settings.postProcessingUserPrompt = value;
-                    await this.plugin.saveSettings();
-                }),
         );
 
         new Setting(containerEl)
