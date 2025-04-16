@@ -14,14 +14,15 @@ export class PromptModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 		contentEl.empty();
-		contentEl.createEl("h2", { text: this.promptText });
+		contentEl.createEl("p", { text: this.promptText });
 
 		let inputEl: HTMLTextAreaElement;
 
 		new Setting(contentEl)
-			.setName("Your Response")
 			.addTextArea((text) => {
 				inputEl = text.inputEl;
+				inputEl.style.width = "100%";
+				inputEl.style.height = "10em";
 				text.onChange((value) => {
 					this.result = value;
 				});
