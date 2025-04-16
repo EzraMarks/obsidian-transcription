@@ -32,6 +32,7 @@
     "license": "MIT",
     "devDependencies": {
         "@types/node": "^16.11.6",
+        "@types/nunjucks": "^3.2.6",
         "@types/which": "^2.0.1",
         "@typescript-eslint/eslint-plugin": "5.29.0",
         "@typescript-eslint/parser": "5.29.0",
@@ -44,6 +45,7 @@
     },
     "dependencies": {
         "date-fns": "^2.29.3",
+        "nunjucks": "^3.2.4",
         "tus-js-client": "^3.1.1",
         "yaml": "^2.7.1"
     }

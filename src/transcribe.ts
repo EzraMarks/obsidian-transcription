@@ -1,7 +1,10 @@
 import { TranscriptionSettings, /*SWIFTINK_AUTH_CALLBACK*/  DEFAULT_SETTINGS } from "src/settings";
-import { Notice, requestUrl, RequestUrlParam, TFile, Vault, App } from "obsidian";
+import { Notice, requestUrl, RequestUrlParam, TFile, Vault, App, TFolder } from "obsidian";
 import { StatusBar } from "./status";
 import { parsePromptChainSpecFile, PromptChainSpec } from "./promptChainUtils";
+import { PromptModal } from "./promptModal";
+import nunjucks from "nunjucks";
+
 
 const MAX_TRIES = 100;
 
@@ -29,50 +32,46 @@ export class TranscriptionEngine {
 
     async getTranscriptionOpenAI(file: TFile): Promise<string> {
         const WHISPER_API_URL = "https://api.openai.com/v1/audio/transcriptions";
-
         const { openaiKey } = this.settings;
-
-        // Read the file content
+    
         const fileContent = await this.vault.readBinary(file);
-
-        // Create FormData
+    
         const formData = new FormData();
         formData.append("file", new Blob([fileContent]), file.name);
         formData.append("model", "whisper-1");
-
-        // Prepare headers
-        const headers = {
-            Authorization: `Bearer ${openaiKey}`,
-        };
-
+    
         try {
-            // Make the POST request using fetch
             const response = await fetch(WHISPER_API_URL, {
                 method: "POST",
-                headers: headers,
+                headers: {
+                    Authorization: `Bearer ${openaiKey}`,
+                },
                 body: formData,
             });
-
+    
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
-
+    
             const jsonResponse = await response.json();
-            const textResponse = jsonResponse.text;
-
+            const transcription = jsonResponse.text;
+    
             if (this.settings.debug) {
-                console.log(`Raw transcription: ${textResponse}`);
+                console.log(`Raw transcription: ${transcription}`);
             }
-
-            const textAfterFindAndReplace = this.applyFindAndReplace(textResponse);
-
-            // Return the transcribed text
-            return this.postProcessTranscription(textAfterFindAndReplace);
+    
+            const cleaned = this.applyFindAndReplace(transcription);
+            const postProcessed = this.postProcessTranscription(cleaned);
+    
+            // Execute the LLM prompt chain using the final transcription
+            return await this.runPromptChain(await postProcessed);
+    
         } catch (error) {
-            console.error("Error with URL:", WHISPER_API_URL, error);
-            throw new Error("Failed to transcribe audio");
+            console.error("Error with Whisper transcription:", error);
+            throw error;
         }
     }
+    
 
     applyFindAndReplace(transcription: string): string {
         const findAndReplaceMap = this.getFindAndReplaceMap();
@@ -113,21 +112,20 @@ export class TranscriptionEngine {
         return result;
     }
 
-    getPromptChainSpec(): Promise<PromptChainSpec> {
+    async getPromptChainSpec(): Promise<PromptChainSpec> {
         const { promptChainSpecPath } = this.settings;
         const promptChainFile = this.app.vault.getFileByPath(promptChainSpecPath);
         if (!promptChainFile) {
             throw new Error(`Prompt chain file not found at path: ${promptChainSpecPath}`);
         }
 
-        return this.app.vault.read(promptChainFile).then((content) => {
-            try {
-                return parsePromptChainSpecFile(content);
-            } catch (error) {
-                throw new Error("Failed to parse prompt chain settings");
-            }
-        });
-
+        try {
+            const content = await this.app.vault.read(promptChainFile);
+            return parsePromptChainSpecFile(content);
+        } catch (error) {
+            console.error("Error while reading or parsing the prompt chain file:", error);
+            throw new Error("Failed to parse prompt chain settings");
+        }
     }
 
     async postProcessTranscription(transcription: string): Promise<string> {
@@ -175,5 +173,84 @@ export class TranscriptionEngine {
             console.error("Error with URL:", CHATGPT_API_URL, error);
             throw new Error("Failed to get response from ChatGPT");
         }
+    }
+
+    async runPromptChain(input: string): Promise<string> {
+        const spec = await this.getPromptChainSpec();
+
+        // Step 1: resolve context
+        const context: Record<string, any> = {
+            input,
+        };
+
+        for (const item of spec.context) {
+            if (item.type === "file_content") {
+                const file = this.app.vault.getFileByPath(item.path);
+                if (!file) throw new Error(`File not found at path: ${item.path}`);
+                context[item.name] = await this.vault.read(file);
+            } else if (item.type === "file_list") {
+                const folder = this.app.vault.getFolderByPath(item.path);
+                if (!folder) throw new Error(`Folder not found at path: ${item.path}`);
+                context[item.name] = folder.children.filter((f) => f instanceof TFile).map((f) => f.name);
+            }
+        }
+
+        // Step 2: execute chain
+        const results: Record<string, any> = {};
+
+        for (const step of spec.chain) {
+            // Build a scoped context with prior results
+            const scopedContext = { ...context };
+            for (const [id, result] of Object.entries(results)) {
+                scopedContext[id] = { output: result };
+            }
+
+            if (step.type === "llm") {
+                const messages = step.prompt.map((p) => ({
+                    role: p.role,
+                    content: nunjucks.renderString(p.content, scopedContext),
+                }));
+
+                const payload = {
+                    model: step.model,
+                    temperature: step.temperature,
+                    messages,
+                };
+
+                const response = await fetch("https://api.openai.com/v1/chat/completions", {
+                    method: "POST",
+                    headers: {
+                        Authorization: `Bearer ${this.settings.openaiKey}`,
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify(payload),
+                });
+
+                const json = await response.json();
+                results[step.id] = json.choices[0].message.content.trim();
+            }
+
+            if (step.type === "human") {
+                // Evaluate the condition if provided
+                if (step.if) {
+                    const conditionResult = nunjucks.renderString(`{{ ${step.if} }}`, scopedContext);
+                    if (conditionResult !== "true" && conditionResult !== "Yes") continue;
+                }
+
+                const renderedPrompt = nunjucks.renderString(step.prompt, scopedContext);
+                new Notice(renderedPrompt); // Or however you'd like to show it to the user
+
+                const userResponse = await this.waitForUserResponse(renderedPrompt); // You’d implement this
+                results[step.id] = userResponse;
+            }
+        }
+
+        return results[spec.chain[spec.chain.length - 1].id];
+    }
+
+    async waitForUserResponse(prompt: string): Promise<string> {
+        return new Promise((resolve) => {
+            new PromptModal(this.app, prompt, resolve).open();
+        });
     }
 }
