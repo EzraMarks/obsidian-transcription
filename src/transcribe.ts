@@ -177,7 +177,7 @@ export class TranscriptionEngine {
 
             // Evaluate the condition if provided
             if (step.if) {
-                const conditionResult = nunjucks.renderString(step.if, scopedContext);
+                const conditionResult = nunjucks.renderString(`{{${step.if}}}`, scopedContext);
                 if (conditionResult !== "true") continue;
             }
 
