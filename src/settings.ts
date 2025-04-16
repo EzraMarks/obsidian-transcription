@@ -7,7 +7,6 @@ interface TranscriptionSettings {
     openaiKey: string;
     findAndReplace: string; // Colon-delimited format, with newlines separating pairs of words. E.g. "Maddie: Maddy\nRhea: Riya"
     promptChainSpecPath: string;
-    openaiModel: string;
     openaiCustomModel: string;
 }
 
@@ -17,7 +16,6 @@ const DEFAULT_SETTINGS: TranscriptionSettings = {
     openaiKey: "",
     findAndReplace: "",
     promptChainSpecPath: "",
-    openaiModel: "",
     openaiCustomModel: "",
 };
 
@@ -104,37 +102,6 @@ class TranscriptionSettingTab extends PluginSettingTab {
                 }),
         );
 
-        new Setting(containerEl)
-        .setName("Model")
-        .setDesc("The OpenAI language model to use")
-        .setClass("openai-settings")
-        .addDropdown((dropdown) =>
-            dropdown
-                .addOption("gpt-3.5-turbo", "GPT-3.5 Turbo")
-                .addOption("gpt-4o", "GPT-4o")
-                .addOption("custom", "Custom")
-                .setValue(this.plugin.settings.openaiModel)
-                .onChange(async (value) => {
-                    this.plugin.settings.openaiModel = value;
-                    await this.plugin.saveSettings();
-                    this.updateSettingVisibility(".openai-settings-custom-model", value === "custom");
-                }),
-        );
-        
-        new Setting(containerEl)
-        .setName("Custom Model")
-        .setDesc("Custom OpenAI language model to use")
-        .setClass("openai-settings-custom-model")
-        .addText((text) =>
-            text
-                .setPlaceholder(DEFAULT_SETTINGS.openaiCustomModel)
-                .setValue(this.plugin.settings.openaiCustomModel)
-                .onChange(async (value) => {
-                    this.plugin.settings.openaiCustomModel = value;
-                    await this.plugin.saveSettings();
-                }),
-        );
-
         new Setting(containerEl).setName("Advanced Settings").setHeading();
 
         new Setting(containerEl)
@@ -148,8 +115,6 @@ class TranscriptionSettingTab extends PluginSettingTab {
                         await this.plugin.saveSettings();
                     }),
             );
-
-        this.updateSettingVisibility(".openai-settings-custom-model", this.plugin.settings.openaiModel === "custom");
     }
 
 
