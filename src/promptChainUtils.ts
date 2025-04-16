@@ -1,6 +1,6 @@
 import yaml from "yaml";
 
-export interface ContextItem {
+export interface InputSource {
     name: string;
     type: "file_content" | "file_list";
     path: string;
@@ -12,33 +12,45 @@ export interface LlmPromptPart {
 }
 
 export interface LlmChainStep {
-    id: string;
+    name: string;
     type: "llm";
     description: string;
-    model: string;
-    temperature: number;
+    if?: string;
+    model: LlmModel;
     prompt: LlmPromptPart[];
 }
 
+export interface LlmModel {
+    name: string;
+    temperature: number;
+}
+
 export interface HumanChainStep {
-    id: string;
+    name: string;
     type: "human";
     description: string;
     if?: string;
     prompt: string;
 }
 
-export type ChainStep = LlmChainStep | HumanChainStep;
+export interface TemplatingChainStep {
+    name: string;
+    type: "templating";
+    description: string;
+    if?: string;
+    template: string;
+}
+
+export type ChainStep = LlmChainStep | HumanChainStep | TemplatingChainStep;
 
 export interface PromptChainSpec {
-    context: ContextItem[];
-    chain: ChainStep[];
+    additional_inputs: InputSource[];
+    steps: ChainStep[];
 }
 
 export function parsePromptChainSpecFile(fullText: string): PromptChainSpec {
     // Strip frontmatter
     const withoutFrontmatter = fullText.replace(/^---[\s\S]*?---/, "").trim();
-
     // Extract content inside ```yaml code block
     const match = withoutFrontmatter.match(/```yaml([\s\S]*?)```/);
     if (!match) {
