@@ -1,10 +1,10 @@
-import { TranscriptionSettings, /*SWIFTINK_AUTH_CALLBACK*/  DEFAULT_SETTINGS } from "src/settings";
+import { TranscriptionSettings, /*SWIFTINK_AUTH_CALLBACK*/ DEFAULT_SETTINGS } from "src/settings";
 import { Notice, requestUrl, RequestUrlParam, TFile, Vault, App, TFolder } from "obsidian";
 import { StatusBar } from "./status";
 import { parsePromptChainSpecFile, PromptChainSpec } from "./promptChainUtils";
 import { PromptModal } from "./promptModal";
 import nunjucks from "nunjucks";
-
+import he from "he";
 
 const MAX_TRIES = 100;
 
@@ -33,13 +33,13 @@ export class TranscriptionEngine {
     async getTranscriptionOpenAI(file: TFile): Promise<string> {
         const WHISPER_API_URL = "https://api.openai.com/v1/audio/transcriptions";
         const { openaiKey } = this.settings;
-    
+
         const fileContent = await this.vault.readBinary(file);
-    
+
         const formData = new FormData();
         formData.append("file", new Blob([fileContent]), file.name);
         formData.append("model", "whisper-1");
-    
+
         try {
             const response = await fetch(WHISPER_API_URL, {
                 method: "POST",
@@ -48,30 +48,28 @@ export class TranscriptionEngine {
                 },
                 body: formData,
             });
-    
+
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
-    
+
             const jsonResponse = await response.json();
             const transcription = jsonResponse.text;
-    
+
             if (this.settings.debug) {
                 console.log(`Raw transcription: ${transcription}`);
             }
-    
+
             const cleaned = this.applyFindAndReplace(transcription);
             const postProcessed = this.postProcessTranscription(cleaned);
-    
+
             // Execute the LLM prompt chain using the final transcription
             return await this.runPromptChain(await postProcessed);
-    
         } catch (error) {
             console.error("Error with Whisper transcription:", error);
             throw error;
         }
     }
-    
 
     applyFindAndReplace(transcription: string): string {
         const findAndReplaceMap = this.getFindAndReplaceMap();
@@ -183,7 +181,7 @@ export class TranscriptionEngine {
             input,
         };
 
-        for (const item of spec.context) {
+        for (const item of spec.additional_inputs) {
             if (item.type === "file_content") {
                 const file = this.app.vault.getFileByPath(item.path);
                 if (!file) throw new Error(`File not found at path: ${item.path}`);
@@ -198,11 +196,17 @@ export class TranscriptionEngine {
         // Step 2: execute chain
         const results: Record<string, any> = {};
 
-        for (const step of spec.chain) {
+        for (const step of spec.steps) {
             // Build a scoped context with prior results
             const scopedContext = { ...context };
             for (const [id, result] of Object.entries(results)) {
-                scopedContext[id] = { output: result };
+                scopedContext[id] = result;
+            }
+
+            // Evaluate the condition if provided
+            if (step.if) {
+                const conditionResult = nunjucks.renderString(step.if, scopedContext);
+                if (conditionResult !== "true") continue;
             }
 
             if (step.type === "llm") {
@@ -212,8 +216,8 @@ export class TranscriptionEngine {
                 }));
 
                 const payload = {
-                    model: step.model,
-                    temperature: step.temperature,
+                    model: step.model.name,
+                    temperature: step.model.temperature,
                     messages,
                 };
 
@@ -227,25 +231,25 @@ export class TranscriptionEngine {
                 });
 
                 const json = await response.json();
-                results[step.id] = json.choices[0].message.content.trim();
+                results[step.name] = json.choices[0].message.content.trim();
             }
 
             if (step.type === "human") {
-                // Evaluate the condition if provided
-                if (step.if) {
-                    const conditionResult = nunjucks.renderString(`{{ ${step.if} }}`, scopedContext);
-                    if (conditionResult !== "true" && conditionResult !== "Yes") continue;
-                }
-
                 const renderedPrompt = nunjucks.renderString(step.prompt, scopedContext);
                 new Notice(renderedPrompt); // Or however you'd like to show it to the user
 
                 const userResponse = await this.waitForUserResponse(renderedPrompt); // You’d implement this
-                results[step.id] = userResponse;
+                results[step.name] = userResponse;
+            }
+
+            if (step.type === "templating") {
+                const renderedTemplate = nunjucks.renderString(step.template, scopedContext);
+                results[step.name] = renderedTemplate;
             }
         }
 
-        return results[spec.chain[spec.chain.length - 1].id];
+        const finalResult = results[spec.steps[spec.steps.length - 1].name];
+        return he.decode(finalResult);
     }
 
     async waitForUserResponse(prompt: string): Promise<string> {
