@@ -1,9 +1,18 @@
 import yaml from "yaml";
 
-export interface InputSource {
+export type InputSource = FileContentInputSource | FileListInputSource;
+
+export interface FileContentInputSource {
     name: string;
-    type: "file_content" | "file_list";
+    type: "file_content";
     path: string;
+}
+
+export interface FileListInputSource {
+    name: string;
+    type: "file_list";
+    path: string;
+    frontmatterProperties: string[];
 }
 
 export interface LlmPromptPart {

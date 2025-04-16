@@ -1,5 +1,5 @@
 import { TranscriptionSettings, /*SWIFTINK_AUTH_CALLBACK*/ DEFAULT_SETTINGS } from "src/settings";
-import { Notice, requestUrl, RequestUrlParam, TFile, Vault, App, TFolder } from "obsidian";
+import { Notice, requestUrl, RequestUrlParam, TFile, Vault, App, TFolder, TAbstractFile } from "obsidian";
 import { StatusBar } from "./status";
 import { parsePromptChainSpecFile, PromptChainSpec } from "./promptChainUtils";
 import { PromptModal } from "./promptModal";
@@ -64,7 +64,7 @@ export class TranscriptionEngine {
             const postProcessed = this.postProcessTranscription(cleaned);
 
             // Execute the LLM prompt chain using the final transcription
-            return await this.runPromptChain(await postProcessed);
+            return await this.runPromptChain(await postProcessed, file);
         } catch (error) {
             console.error("Error with Whisper transcription:", error);
             throw error;
@@ -173,7 +173,7 @@ export class TranscriptionEngine {
         }
     }
 
-    async runPromptChain(input: string): Promise<string> {
+    async runPromptChain(input: string, activeFile: TFile): Promise<string> {
         const spec = await this.getPromptChainSpec();
 
         // Step 1: resolve context
@@ -188,8 +188,28 @@ export class TranscriptionEngine {
                 context[item.name] = await this.vault.read(file);
             } else if (item.type === "file_list") {
                 const folder = this.app.vault.getFolderByPath(item.path);
+
                 if (!folder) throw new Error(`Folder not found at path: ${item.path}`);
-                context[item.name] = folder.children.filter((f) => f instanceof TFile).map((f) => f.name);
+                context[item.name] = folder.children
+                    .filter((f): f is TFile => f instanceof TFile)
+                    .map((f) => {
+                        const frontmatter = this.app.metadataCache.getFileCache(f)?.frontmatter;
+                        const includedFrontmatter: Record<string, string> = {};
+
+                        if (frontmatter && Array.isArray(item.frontmatterProperties)) {
+                            for (const key of item.frontmatterProperties) {
+                                if (frontmatter[key] !== undefined) {
+                                    includedFrontmatter[key] = frontmatter[key];
+                                }
+                            }
+                        }
+
+                        return JSON.stringify({
+                            name: f.basename,
+                            linkText: this.app.metadataCache.fileToLinktext(f, activeFile.path, true),
+                            ...includedFrontmatter,
+                        });
+                    });
             }
         }
 
