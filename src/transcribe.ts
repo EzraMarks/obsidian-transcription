@@ -177,14 +177,14 @@ export class TranscriptionEngine {
 
             // Evaluate the condition if provided
             if (step.if) {
-                const conditionResult = nunjucks.renderString(`{{${step.if}}}`, scopedContext);
+                const conditionResult = he.decode(nunjucks.renderString(`{{${step.if}}}`, scopedContext));
                 if (conditionResult !== "true") continue;
             }
 
             if (step.type === "llm") {
                 const messages = step.prompt.map((p) => ({
                     role: p.role,
-                    content: nunjucks.renderString(p.content, scopedContext),
+                    content: he.decode(nunjucks.renderString(p.content, scopedContext)),
                 }));
 
                 const payload = {
@@ -207,7 +207,7 @@ export class TranscriptionEngine {
             }
 
             if (step.type === "human") {
-                const renderedPrompt = nunjucks.renderString(step.prompt, scopedContext);
+                const renderedPrompt = he.decode(nunjucks.renderString(step.prompt, scopedContext));
                 new Notice(renderedPrompt); // Or however you'd like to show it to the user
 
                 const userResponse = await this.waitForUserResponse(renderedPrompt); // You’d implement this
@@ -215,13 +215,12 @@ export class TranscriptionEngine {
             }
 
             if (step.type === "templating") {
-                const renderedTemplate = nunjucks.renderString(step.template, scopedContext);
+                const renderedTemplate = he.decode(nunjucks.renderString(step.template, scopedContext));
                 results[step.name] = renderedTemplate;
             }
         }
 
-        const finalResult = results[spec.steps[spec.steps.length - 1].name];
-        return he.decode(finalResult);
+        return results[spec.steps[spec.steps.length - 1].name];
     }
 
     async waitForUserResponse(prompt: string): Promise<string> {
