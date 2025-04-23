@@ -1,4 +1,5 @@
 import yaml from "yaml";
+import { TFile, TFolder, Vault } from "obsidian";
 
 export type InputSource = FileContentInputSource | FileListInputSource;
 
@@ -20,11 +21,14 @@ export interface LlmPromptPart {
     content: string;
 }
 
-export interface LlmChainStep {
+interface BaseChainStep {
     name: string;
-    type: "llm";
-    description: string;
     if?: string;
+    description: string;
+}
+
+export interface LlmChainStep extends BaseChainStep {
+    type: "llm";
     model: LlmModel;
     prompt: LlmPromptPart[];
 }
@@ -34,23 +38,23 @@ export interface LlmModel {
     temperature: number;
 }
 
-export interface HumanChainStep {
-    name: string;
+export interface HumanChainStep extends BaseChainStep {
     type: "human";
-    description: string;
-    if?: string;
     prompt: string;
 }
 
-export interface TemplatingChainStep {
-    name: string;
+export interface TemplatingChainStep extends BaseChainStep {
     type: "templating";
-    description: string;
-    if?: string;
     template: string;
 }
 
-export type ChainStep = LlmChainStep | HumanChainStep | TemplatingChainStep;
+export interface AutoWikilinkChainStep extends BaseChainStep {
+    type: "auto_wikilink";
+    files: string[];
+    input: string;
+}
+
+export type ChainStep = LlmChainStep | HumanChainStep | TemplatingChainStep | AutoWikilinkChainStep;
 
 export interface PromptChainSpec {
     additional_inputs: InputSource[];
