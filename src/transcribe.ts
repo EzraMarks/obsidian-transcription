@@ -1,10 +1,11 @@
 import { TranscriptionSettings, /*SWIFTINK_AUTH_CALLBACK*/ DEFAULT_SETTINGS } from "src/settings";
 import { Notice, requestUrl, RequestUrlParam, TFile, Vault, App, TFolder, TAbstractFile } from "obsidian";
 import { StatusBar } from "./status";
-import { parsePromptChainSpecFile, PromptChainSpec } from "./promptChainUtils";
+import { parsePromptChainSpecFile, PromptChainSpec } from "./promptChainParsingUtils";
 import { PromptModal } from "./promptModal";
 import nunjucks from "nunjucks";
 import he from "he";
+import { getFilesFromGlob } from "./vaultGlob";
 
 const MAX_TRIES = 100;
 
@@ -204,19 +205,19 @@ export class TranscriptionEngine {
 
                 const json = await response.json();
                 results[step.name] = json.choices[0].message.content.trim();
-            }
-
-            if (step.type === "human") {
+            } else if (step.type === "human") {
                 const renderedPrompt = he.decode(nunjucks.renderString(step.prompt, scopedContext));
-                new Notice(renderedPrompt); // Or however you'd like to show it to the user
+                new Notice(renderedPrompt);
 
-                const userResponse = await this.waitForUserResponse(renderedPrompt); // You’d implement this
+                const userResponse = await this.waitForUserResponse(renderedPrompt);
                 results[step.name] = userResponse;
-            }
-
-            if (step.type === "templating") {
+            } else if (step.type === "templating") {
                 const renderedTemplate = he.decode(nunjucks.renderString(step.template, scopedContext));
                 results[step.name] = renderedTemplate;
+            } else if (step.type === "auto_wikilink") {
+                const files = step.files.flatMap((fileGlob) => getFilesFromGlob(this.vault, fileGlob));
+
+                console.log(files.map((f) => f.path));
             }
         }
 
