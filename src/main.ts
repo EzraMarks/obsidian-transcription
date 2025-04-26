@@ -12,7 +12,7 @@ import {
     Menu,
     Modal
 } from "obsidian";
-import { TranscriptionEngine } from "./transcribe";
+import { TranscriptionEngine } from "./transcriptionEngine";
 import { StatusBar } from "./status";
 import {
     TranscriptionSettings,

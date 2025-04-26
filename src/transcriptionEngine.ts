@@ -6,20 +6,18 @@ import { PromptModal } from "./promptModal";
 import nunjucks from "nunjucks";
 import he from "he";
 import { getFilesFromGlob } from "./vaultGlob";
-
-const MAX_TRIES = 100;
+import { AutoWikilinkEngine } from "./autoWikilinkEngine";
 
 export class TranscriptionEngine {
-    settings: TranscriptionSettings;
-    vault: Vault;
-    statusBar: StatusBar | null;
-    app: App;
+    readonly autoWikilinkEngine: AutoWikilinkEngine;
 
-    constructor(settings: TranscriptionSettings, vault: Vault, statusBar: StatusBar | null, app: App) {
-        this.settings = settings;
-        this.vault = vault;
-        this.statusBar = statusBar;
-        this.app = app;
+    constructor(
+        readonly settings: TranscriptionSettings,
+        readonly vault: Vault,
+        readonly statusBar: StatusBar | null,
+        readonly app: App,
+    ) {
+        this.autoWikilinkEngine = new AutoWikilinkEngine(settings, vault, statusBar, app);
     }
 
     async getTranscription(file: TFile): Promise<string> {
@@ -217,7 +215,9 @@ export class TranscriptionEngine {
             } else if (step.type === "auto_wikilink") {
                 const files = step.files.flatMap((fileGlob) => getFilesFromGlob(this.vault, fileGlob));
 
-                console.log(files.map((f) => f.path));
+                const renderedInput = he.decode(nunjucks.renderString(step.input, scopedContext));
+                const response = await this.autoWikilinkEngine.applyAutoWikilink(renderedInput, files);
+                results[step.name] = response;
             }
         }
 
