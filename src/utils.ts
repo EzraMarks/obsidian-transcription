@@ -36,7 +36,7 @@ export function getVaultAbsolutePath(app: App) {
  * @param biasStrength - Controls how strongly newer items are favored (default: 2).
  * @returns A biased sample of items from the input list.
  */
-export function biasedSample<T>(list: T[], sampleSize: number, biasStrength: number = 2): T[] {
+export function biasedSample<T>(list: T[], sampleSize: number, biasStrength = 2): T[] {
     const result: T[] = [];
     const usedIndices = new Set<number>();
 
@@ -83,7 +83,6 @@ export function extractSentence(line: string, col: number, contextWords = 14): s
     const suffix = end < words.length ? "…" : "";
     return `${prefix}${snippet}${suffix}`;
 }
-
 
 /** Walks backward from `lineNum` looking for the closest Markdown heading (## or ###) */
 export function findNearestHeading(lines: string[], lineNum: number): string | undefined {

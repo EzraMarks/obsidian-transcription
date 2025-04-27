@@ -10,17 +10,12 @@ import {
     FuzzySuggestModal,
     App,
     Menu,
-    Modal
+    Modal,
 } from "obsidian";
-import { TranscriptionEngine } from "./transcriptionEngine";
 import { StatusBar } from "./status";
-import {
-    TranscriptionSettings,
-    DEFAULT_SETTINGS,
-    TranscriptionSettingTab,
-} from "./settings";
+import { TranscriptionSettings, DEFAULT_SETTINGS, TranscriptionSettingTab } from "./settings";
 import { FileLink } from "./fileLink";
-
+import { PipelineEngine } from "./pipelineEngine";
 
 export default class Transcription extends Plugin {
     settings: TranscriptionSettings;
@@ -28,7 +23,7 @@ export default class Transcription extends Plugin {
 
     public static plugin: Plugin;
     public static children: Array<ChildProcess> = [];
-    public transcriptionEngine: TranscriptionEngine;
+    public pipelineEngine: PipelineEngine;
 
     private pendingCommand: { file?: TFile; parentFile: TFile } | null = null;
     private ongoingTranscriptionTasks: Array<{
@@ -65,9 +60,7 @@ export default class Transcription extends Plugin {
 
     public getTranscribeableFiles = async (file: TFile) => {
         // Get all linked files in the markdown file
-        const filesLinked = Object.keys(
-            this.app.metadataCache.resolvedLinks[file.path]
-        );
+        const filesLinked = Object.keys(this.app.metadataCache.resolvedLinks[file.path]);
 
         // Now that we have all the files linked in the markdown file, we need to filter them by the file extensions we want to transcribe
         const filesToTranscribe: TFile[] = [];
@@ -75,43 +68,35 @@ export default class Transcription extends Plugin {
             const linkedFileExtension = linkedFilePath.split(".").pop();
             if (
                 linkedFileExtension === undefined ||
-                !Transcription.transcribeFileExtensions.includes(
-                    linkedFileExtension.toLowerCase()
-                )
+                !Transcription.transcribeFileExtensions.includes(linkedFileExtension.toLowerCase())
             ) {
                 if (this.settings.debug)
                     console.log(
                         "Skipping " +
-                        linkedFilePath +
-                        " because the file extension is not in the list of transcribeable file extensions"
+                            linkedFilePath +
+                            " because the file extension is not in the list of transcribeable file extensions",
                     );
                 continue;
             }
 
             // We now know that the file extension is in the list of transcribeable file extensions
-            const linkedFile =
-                this.app.vault.getAbstractFileByPath(linkedFilePath);
+            const linkedFile = this.app.vault.getAbstractFileByPath(linkedFilePath);
 
             // Validate that we are dealing with a file and add it to the list of verified files to transcribe
             if (linkedFile instanceof TFile) filesToTranscribe.push(linkedFile);
             else {
-                if (this.settings.debug)
-                    console.log("Could not find file " + linkedFilePath);
+                if (this.settings.debug) console.log("Could not find file " + linkedFilePath);
                 continue;
             }
         }
         return filesToTranscribe;
     };
 
-    public async transcribeAndWrite(
-        parent_file: TFile,
-        file: TFile,
-        abortController: AbortController | null
-    ) {
+    public async transcribeAndWrite(parent_file: TFile, file: TFile, abortController: AbortController | null) {
         try {
             if (this.settings.debug) console.log("Transcribing " + file.path);
 
-            const transcription = await this.transcriptionEngine.getTranscription(file);
+            const transcription = await this.pipelineEngine.runPipeline(parent_file, file);
 
             let fileText = await this.app.vault.read(parent_file);
             const fileLinkString = this.app.metadataCache.fileToLinktext(file, parent_file.path);
@@ -137,10 +122,9 @@ export default class Transcription extends Plugin {
             // First check if 402 is in the error message, if so alert the user that they need to pay
 
             if (error?.message?.includes("402")) {
-
                 new Notice(
-                    "You have exceeded the free tier.\nPlease upgrade to a paid plan at swiftink.io/pricing to continue transcribing files.\nThanks for using Swiftink!"
-                    , 10 * 1000
+                    "You have exceeded the free tier.\nPlease upgrade to a paid plan at swiftink.io/pricing to continue transcribing files.\nThanks for using Swiftink!",
+                    10 * 1000,
                 );
             } else {
                 if (this.settings.debug) console.log(error);
@@ -161,23 +145,15 @@ export default class Transcription extends Plugin {
             const fileExtension = file.extension?.toLowerCase();
 
             // Check if the file extension is in the allowed list
-            if (
-                fileExtension &&
-                Transcription.transcribeFileExtensions.includes(fileExtension)
-            ) {
+            if (fileExtension && Transcription.transcribeFileExtensions.includes(fileExtension)) {
                 // Add a new item to the right-click menu
                 menu.addItem((item) => {
-                    item
-                        .setTitle("Transcribe")
+                    item.setTitle("Transcribe")
                         .setIcon("headphones")
                         .onClick(async () => {
                             // Handle the click event
                             const abortController = new AbortController();
-                            const task = this.transcribeAndWrite(
-                                parentFile,
-                                file,
-                                abortController
-                            );
+                            const task = this.transcribeAndWrite(parentFile, file, abortController);
                             this.ongoingTranscriptionTasks.push({
                                 task,
                                 abortController,
@@ -189,7 +165,6 @@ export default class Transcription extends Plugin {
         }
     }
 
-
     async onload() {
         await this.loadSettings();
 
@@ -197,33 +172,21 @@ export default class Transcription extends Plugin {
         console.log("Loading Obsidian Transcription");
         if (this.settings.debug) console.log("Debug mode enabled");
 
-        this.transcriptionEngine = new TranscriptionEngine(
-            this.settings,
-            this.app.vault,
-            this.statusBar,
-            this.app,
-        );
+        this.pipelineEngine = new PipelineEngine(this.settings, this.app.vault, this.statusBar, this.app);
 
         if (!Platform.isMobileApp) {
             this.statusBar = new StatusBar(this.addStatusBarItem());
-            this.registerInterval(
-                window.setInterval(() => this.statusBar.display(), 1000)
-            );
+            this.registerInterval(window.setInterval(() => this.statusBar.display(), 1000));
         }
 
         // Register the file-menu event
-        this.registerEvent(
-            this.app.workspace.on("file-menu", this.onFileMenu.bind(this))
-        );
+        this.registerEvent(this.app.workspace.on("file-menu", this.onFileMenu.bind(this)));
 
         this.addCommand({
             id: "obsidian-transcription-add-file",
             name: "Add File to Transcription",
             editorCallback: async () => {
-
                 class FileSelectionModal extends Modal {
-
-
                     onOpen() {
                         const { contentEl } = this;
                         contentEl.createEl("h2", { text: "Select files:" });
@@ -238,7 +201,7 @@ export default class Transcription extends Plugin {
                             const fileList = input.files;
                             if (fileList) {
                                 const files = Array.from(fileList);
-                                let path = ""
+                                let path = "";
                                 for (const file of files) {
                                     //     console.log(file)
                                     //@ts-ignore
@@ -254,30 +217,18 @@ export default class Transcription extends Plugin {
                                 // console.log(attachementFolder);
                                 // console.log(basePath);
 
-                                const fe = new FileLink(
-                                    path,
-                                    basePath,
-                                );
+                                const fe = new FileLink(path, basePath);
 
                                 files.forEach((file: File) => {
-                                    fe.embedFile(file)
-                                })
+                                    fe.embedFile(file);
+                                });
                             }
-
-
-                        })
-
+                        });
                     }
                 }
                 new FileSelectionModal(this.app).open();
-            }
-
-
-
-
+            },
         });
-
-
 
         this.addCommand({
             id: "obsidian-transcription-stop",
@@ -286,26 +237,22 @@ export default class Transcription extends Plugin {
                 try {
                     // Check if there is an ongoing transcription task
                     if (this.ongoingTranscriptionTasks.length > 0) {
-
                         console.log("Stopping ongoing transcription...");
 
                         // Loop through each ongoing task and signal abort
                         for (const { abortController, task } of this.ongoingTranscriptionTasks) {
                             abortController.abort();
-                            await task.catch(() => { }); // Catch any errors during abortion
+                            await task.catch(() => {}); // Catch any errors during abortion
                         }
 
                         // Clear the ongoing transcription tasks after completion or cancellation
                         this.ongoingTranscriptionTasks = [];
-                    }
-                    else {
-                        new Notice("No ongoing transcription to stop", 5 * 1000)
-
+                    } else {
+                        new Notice("No ongoing transcription to stop", 5 * 1000);
                     }
                 } catch (error) {
                     console.error("Error stopping transcription:", error);
                 }
-
             },
         });
 
@@ -407,16 +354,11 @@ export default class Transcription extends Plugin {
     }
 
     onunload() {
-        if (this.settings.debug)
-            console.log("Unloading Obsidian Transcription");
+        if (this.settings.debug) console.log("Unloading Obsidian Transcription");
     }
 
     async loadSettings() {
-        this.settings = Object.assign(
-            {},
-            DEFAULT_SETTINGS,
-            await this.loadData()
-        );
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     }
 
     async saveSettings() {

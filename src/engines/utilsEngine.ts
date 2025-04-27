@@ -1,8 +1,12 @@
 import { App, TFile, Vault } from "obsidian";
-import { TranscriptionSettings } from "./settings";
+import { TranscriptionSettings } from "src/settings";
 
 export class UtilsEngine {
-    constructor(readonly settings: TranscriptionSettings, readonly vault: Vault, readonly app: App) {}
+    constructor(
+        private readonly settings: TranscriptionSettings,
+        private readonly vault: Vault,
+        private readonly app: App,
+    ) {}
 
     /**
      * For a given sourcePath, returns the timestamp (ms since epoch)
@@ -18,8 +22,8 @@ export class UtilsEngine {
     }
 
     getFileOrThrow(sourcePath: string): TFile {
-      const sourceFile = this.vault.getFileByPath(sourcePath);
-      if (!sourceFile) throw new Error(`Source file not found for path: ${sourcePath}`);
-      return sourceFile;
+        const sourceFile = this.vault.getFileByPath(sourcePath);
+        if (!sourceFile) throw new Error(`Source file not found for path: ${sourcePath}`);
+        return sourceFile;
     }
 }
