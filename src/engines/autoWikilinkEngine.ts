@@ -1,15 +1,10 @@
-import {
-    requestUrl,
-    TFile,
-    Vault,
-    App,
-} from "obsidian";
+import { requestUrl, TFile, Vault, App } from "obsidian";
 import Fuse from "fuse.js";
-import { TranscriptionSettings, DEFAULT_SETTINGS } from "src/settings";
-import { StatusBar } from "./status";
+import { TranscriptionSettings } from "src/settings";
+import { StatusBar } from "../status";
 import { BacklinkEngine, BacklinkEntry, BacklinksArrayDict } from "./backlinkEngine";
 import { UtilsEngine } from "./utilsEngine";
-import { extractSentence, findNearestHeading } from "./utils";
+import { extractSentence, findNearestHeading } from "../utils";
 
 export interface AiExtractEntitiesResponse {
     [canonicalName: string]: {
@@ -68,14 +63,14 @@ export interface EntityFileSelection {
 }
 
 export class AutoWikilinkEngine {
-    readonly utilsEngine: UtilsEngine;
-    readonly backlinkEngine: BacklinkEngine;
+    private readonly utilsEngine: UtilsEngine;
+    private readonly backlinkEngine: BacklinkEngine;
 
     constructor(
-        readonly settings: TranscriptionSettings,
-        readonly vault: Vault,
-        readonly statusBar: StatusBar | null,
-        readonly app: App,
+        private readonly settings: TranscriptionSettings,
+        private readonly vault: Vault,
+        private readonly statusBar: StatusBar | null,
+        private readonly app: App,
     ) {
         this.utilsEngine = new UtilsEngine(settings, vault, app);
         this.backlinkEngine = new BacklinkEngine(settings, vault, app, this.utilsEngine);
@@ -202,7 +197,7 @@ export class AutoWikilinkEngine {
     private async getFileCandidates(entity: ExtractedEntity, files: FileMetadata[]): Promise<FileCandidate[]> {
         const fuse = new Fuse(files, {
             keys: ["file.basename", "aliases", "misspellings"], // TODO: Add misspellings frontmatter to my documents...
-            threshold: 0.1,
+            threshold: 0.25,
             ignoreLocation: true,
             includeScore: true,
             useExtendedSearch: true,

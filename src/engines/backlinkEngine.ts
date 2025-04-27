@@ -1,8 +1,7 @@
 import { App, LinkCache, TFile, Vault } from "obsidian";
-import { TranscriptionSettings } from "./settings";
-import { StatusBar } from "./status";
+import { TranscriptionSettings } from "src/settings";
 import { UtilsEngine } from "./utilsEngine";
-import { biasedSample } from "./utils";
+import { biasedSample } from "src/utils";
 
 /** EXPOSING INTERNAL OBSIDIAN TYPES https://forum.obsidian.md/t/get-backlinks-of-a-file/81638/2 */
 export type BacklinksArrayDict = [sourcePath: string, references: LinkCache[]][];
@@ -14,10 +13,10 @@ export interface BacklinkEntry {
 
 export class BacklinkEngine {
     constructor(
-        readonly settings: TranscriptionSettings,
-        readonly vault: Vault,
-        readonly app: App,
-        readonly utilsEngine: UtilsEngine,
+        private readonly settings: TranscriptionSettings,
+        private readonly vault: Vault,
+        private readonly app: App,
+        private readonly utilsEngine: UtilsEngine,
     ) {}
 
     /** Calculates the total number of backlinks */
