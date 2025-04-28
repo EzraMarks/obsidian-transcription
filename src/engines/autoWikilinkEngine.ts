@@ -1,10 +1,11 @@
-import { requestUrl, TFile, Vault, App } from "obsidian";
+import { TFile, Vault, App } from "obsidian";
 import Fuse from "fuse.js";
 import { TranscriptionSettings } from "src/settings";
 import { StatusBar } from "../status";
 import { BacklinkEngine, BacklinkEntry, BacklinksArrayDict } from "./backlinkEngine";
 import { UtilsEngine } from "./utilsEngine";
 import { extractSentence, findNearestHeading } from "../utils";
+import { ResolveEntityModal } from "src/resolveEntityModal";
 
 export interface AiExtractEntitiesResponse {
     [canonicalName: string]: {
@@ -24,8 +25,8 @@ export interface ExtractedEntity {
     occurrences: EntityOccurrence[];
 }
 
-/** Metadata for a single Obsidian file */
-export interface FileMetadata {
+/** Enriched Obsidian file */
+export interface EnrichedFile {
     file: TFile;
     aliases: string[];
     misspellings: string[];
@@ -33,8 +34,8 @@ export interface FileMetadata {
 
 /** A candidate match between an ExtractedEntity and a file */
 export interface FileCandidate {
-    /** The file’s metadata */
-    file: FileMetadata;
+    /** The file */
+    enrichedFile: EnrichedFile;
     /** Fuzzy‑match score (0–1 where 1 is exact) */
     nameMatchScore: number;
     /** Total number of references to this file */
@@ -58,7 +59,7 @@ export interface ExtractedEntityWithFileCandidates {
 /** The extracted entity being matched and the chosen file */
 export interface EntityFileSelection {
     entity: ExtractedEntityWithFileCandidates;
-    selectedFile?: FileCandidate;
+    selectedFile?: EnrichedFile;
     shouldCreateFile?: boolean;
 }
 
@@ -79,15 +80,72 @@ export class AutoWikilinkEngine {
     /** Main entry point: applies auto-wikilinks to the given text */
     async applyAutoWikilink(input: string, files: TFile[]): Promise<string> {
         // Step 1: extract entities via LLM
-        const entitiesJson = await this.callOpenAI(this.extractReferencesPrompt, input, { type: "json_object" });
-        let extractedEntities: ExtractedEntity[];
+        const extractedEntities = await this.extractEntities(input, files);
+
+        // Step 2: find fuzzy-match candidates
+        const enrichedFiles: EnrichedFile[] = files.map((file) => {
+            const aliases = this.app.metadataCache.getFileCache(file)?.frontmatter?.["aliases"];
+            const misspellings = this.app.metadataCache.getFileCache(file)?.frontmatter?.["misspellings"];
+
+            return {
+                file: file,
+                aliases: Array.isArray(aliases) ? aliases : aliases ? [aliases] : [],
+                misspellings: Array.isArray(misspellings) ? misspellings : misspellings ? [misspellings] : [],
+            };
+        });
+
+        const extractedEntitiesWithFileCandidates: ExtractedEntityWithFileCandidates[] = await Promise.all(
+            extractedEntities.map(async (entity) => {
+                const candidates = await this.getFileCandidates(entity, enrichedFiles);
+                return { entity, candidates };
+            }),
+        );
+
+        console.log("File candidates", extractedEntitiesWithFileCandidates);
+
+        // Step 4: AI selects best candidate
+        const selections: EntityFileSelection[] = await Promise.all(
+            extractedEntitiesWithFileCandidates.map(async (item) => {
+                const selectedFile = item.candidates.length ? await this.selectBestCandidate(item) : undefined;
+                return { entity: item, selectedFile };
+            }),
+        );
+
+        console.log("Selections", selections);
+        console.log(
+            "Selections (but readable)",
+            JSON.stringify(
+                selections.map((it) => ({
+                    entity: it.entity.entity.entity,
+                    fileChoice: it.selectedFile?.file.path,
+                })),
+                null,
+                2,
+            ),
+        );
+
+        // Step 5: human resolve unresolved
+        const finalSelections = await new Promise<EntityFileSelection[]>((resolve) => {
+            new ResolveEntityModal(this.app, selections, enrichedFiles, resolve).open();
+        });
+
+        // Step 6: replace text with links
+        const output = this.applyLinksToText(input, finalSelections);
+        return output;
+    }
+
+    private async extractEntities(input: string, files: TFile[]): Promise<ExtractedEntity[]> {
+        const entitiesJson = await this.utilsEngine.callOpenAI({
+            systemPrompt: this.extractReferencesPrompt,
+            userPrompt: input,
+            responseFormat: { type: "json_object" },
+        });
+
         try {
             const aiResponse: AiExtractEntitiesResponse = JSON.parse(entitiesJson);
-            extractedEntities = Object.entries(aiResponse).map(([key, value]) => {
+            return Object.entries(aiResponse).map(([key, value]) => {
                 return { entity: key, occurrences: value.occurrences };
             });
-
-            console.log("Extracted entities", extractedEntities);
         } catch (err) {
             const errorMessage = `
                 AutoWikilink: Failed to parse extracted entities.
@@ -97,93 +155,6 @@ export class AutoWikilinkEngine {
             `;
             throw new Error(errorMessage);
         }
-
-        // Step 2: find fuzzy-match candidates
-        const fileMetadatas: FileMetadata[] = files.map((file) => {
-            return {
-                file: file,
-                aliases: this.app.metadataCache.getFileCache(file)?.frontmatter?.["aliases"] ?? [],
-                misspellings: this.app.metadataCache.getFileCache(file)?.frontmatter?.["misspellings"] ?? [],
-            };
-        });
-
-        const startTime = Date.now();
-
-        const extractedEntitiesWithFileCandidates: ExtractedEntityWithFileCandidates[] = await Promise.all(
-            extractedEntities.map(async (entity) => {
-                const candidates = await this.getFileCandidates(entity, fileMetadatas);
-                return { entity, candidates };
-            }),
-        );
-
-        const endTime = Date.now();
-        console.log(`Time taken: ${(endTime - startTime) / 1000} seconds`);
-
-        console.log("File candidates", extractedEntitiesWithFileCandidates);
-
-        // Step 4: AI selects best candidate
-        const selections: EntityFileSelection[] = [];
-        for (const item of extractedEntitiesWithFileCandidates.filter((item) => item.candidates.length > 0)) {
-            const choice = await this.selectBestCandidate(item);
-            selections.push({ entity: item, selectedFile: choice });
-        }
-
-        console.log("Selections", selections);
-        console.log(
-            "Selections (but readable)",
-            JSON.stringify(
-                selections.map((it) => ({
-                    entity: it.entity.entity.entity,
-                    fileChoice: it.selectedFile?.file.file.path,
-                })),
-                null,
-                2,
-            ),
-        );
-
-        // throw new Error("Done!");
-
-        // Step 5: human resolve unresolved
-        // const unresolved = selections.filter((s) => !s.selectedFile);
-        // if (unresolved.length > 0) {
-        //     const humanMap = await this.promptHumanForUnresolved(unresolved);
-        //     this.applyHumanSelections(selections, humanMap);
-        // }
-
-        // Step 6: replace text with links
-        const output = this.applyLinksToText(input, selections);
-        return output;
-    }
-
-    /** Calls OpenAI chat completions with given prompt and text */
-    private async callOpenAI(
-        systemPrompt: string,
-        userPrompt: string,
-        responseFormat?: object,
-        model?: string,
-    ): Promise<string> {
-        const messages = [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-        ];
-        const payload = {
-            model: model ?? this.defaultOpenAiModel,
-            // temperature: 1,
-            messages,
-            response_format: responseFormat,
-        };
-        const response = await requestUrl({
-            url: "https://api.openai.com/v1/chat/completions",
-            method: "POST",
-            headers: {
-                Authorization: `Bearer ${this.settings.openaiKey}`,
-                "Content-Type": "application/json",
-            },
-            contentType: "application/json",
-            body: JSON.stringify(payload),
-        });
-
-        return response.json.choices[0].message.content.trim();
     }
 
     // TODO: I should be caching, for every file that is to become a file candidate, the full FileCandidate result!
@@ -194,10 +165,10 @@ export class AutoWikilinkEngine {
     // - then, using the hashmap, make the ExtractedEntityWithEnrichedFileCandidates
 
     /** Returns fuzzy-matched file candidates for an entity */
-    private async getFileCandidates(entity: ExtractedEntity, files: FileMetadata[]): Promise<FileCandidate[]> {
+    private async getFileCandidates(entity: ExtractedEntity, files: EnrichedFile[]): Promise<FileCandidate[]> {
         const fuse = new Fuse(files, {
             keys: ["file.basename", "aliases", "misspellings"], // TODO: Add misspellings frontmatter to my documents...
-            threshold: 0.25,
+            threshold: 0.3,
             ignoreLocation: true,
             includeScore: true,
             useExtendedSearch: true,
@@ -230,7 +201,7 @@ export class AutoWikilinkEngine {
             const bodyPreview = this.getBodyPreview(file.file);
 
             const fileCandidate: FileCandidate = {
-                file,
+                enrichedFile: file,
                 nameMatchScore,
                 backlinkCount,
                 daysSinceLastBacklinkEdit,
@@ -284,12 +255,12 @@ export class AutoWikilinkEngine {
     }
 
     /** AI selects best candidate or undefined */
-    private async selectBestCandidate(item: ExtractedEntityWithFileCandidates): Promise<FileCandidate | undefined> {
+    private async selectBestCandidate(item: ExtractedEntityWithFileCandidates): Promise<EnrichedFile | undefined> {
         const candidates = item.candidates.map((it) => {
             return {
-                filePath: it.file.file.path,
-                aliases: it.file.aliases,
-                misspellings: it.file.misspellings,
+                filePath: it.enrichedFile.file.path,
+                aliases: it.enrichedFile.aliases,
+                misspellings: it.enrichedFile.misspellings,
                 popularity: it.backlinkCount,
                 daysSinceLastReferenced: it.daysSinceLastBacklinkEdit,
                 bodyPreview: it.bodyPreview,
@@ -324,7 +295,7 @@ export class AutoWikilinkEngine {
 
         // console.log("Prompts are", systemPrompt, userPrompt); // TODO: Remove
 
-        const raw = await this.callOpenAI(systemPrompt, userPrompt, undefined, "gpt-4o-mini");
+        const raw = await this.utilsEngine.callOpenAI({ systemPrompt, userPrompt, model: "gpt-4o-mini" });
 
         // Parse out the first line, strip quotes/spaces
         const firstLine = raw.split(/\r?\n/)[0] || "";
@@ -334,106 +305,79 @@ export class AutoWikilinkEngine {
             return undefined;
         }
 
-        return item.candidates.find((c) => c.file.file.path === filePath);
+        return item.candidates.find((c) => c.enrichedFile.file.path === filePath)?.enrichedFile;
     }
 
-    /** Prompts the user to resolve unresolved selections */
-    private async promptHumanForUnresolved(unresolved: EntityFileSelection[]): Promise<Record<string, string>> {
-        const map: Record<string, string> = {};
-        // for (const u of unresolved) {
-        //     const opts = u.entity.candidates.map((c) => c.file.file.basename).join(", ");
-        //     const prompt = `Entity "${u.entity.entity.entity}" - choose from [${opts}], or type "none" or "new":`;
-        //     const choice = await new PromptModal(this.app, prompt).open();
-        //     map[u.entity.entity.entity] = choice;
-        // }
-        return map;
-    }
-
-    /** Applies human choices to selections */
-    private applyHumanSelections(selections: EntityFileSelection[], human: Record<string, string>) {
-        for (const s of selections) {
-            if (!s.selectedFile) {
-                const key = s.entity.entity.entity;
-                const choice = human[key];
-                if (choice === "none") continue;
-                if (choice === "new") {
-                    s.shouldCreateFile = true;
-                } else {
-                    s.selectedFile = s.entity.candidates.find((c) => c.file.file.basename === choice);
-                }
-            }
-        }
-    }
-
-    /** Replaces <entity> tags with Obsidian links based on selections */
     private applyLinksToText(text: string, selections: EntityFileSelection[]): string {
-        const original = text;
-
-        // escape helper for building any regex safely
-        const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-        // 1) build a map: plainSentence → { index, [ {variant,link}, … ] }
-        type LinkInfo = { variant: string; link: string };
-        const sentenceMap = new Map<string, { start: number; links: LinkInfo[] }>();
+        // collect every alias‐to‐link replacement
+        const replacements: { start: number; length: number; link: string }[] = [];
+        // track how far we've already scanned for each alias
+        const lastIndexMap = new Map<string, number>();
 
         for (const sel of selections) {
             if (!sel.selectedFile) continue;
-            const basename = sel.selectedFile.file.file.basename;
+            const targetName = sel.selectedFile.file.basename;
+            const aliases = [targetName, ...(sel.selectedFile.aliases || [])];
+
+            const spellingHelper = this.buildSpellingHelper(sel.selectedFile.misspellings, aliases);
 
             for (const occ of sel.entity.entity.occurrences) {
-                // pull out the tagged sentence and the bare variant
-                const tagged = occ.sentence;
-                const variant = (tagged.match(/<entity>(.*?)<\/entity>/) || [])[1] || "";
+                // pull out the raw alias
+                const { alias: rawAlias } = this.extractPlainAndAlias(occ.sentence);
+                // pick the best canonical form
+                const alias = this.correctSpelling(rawAlias, spellingHelper);
+                const link = `[[${targetName}|${alias}]]`;
 
-                // build your [[file|label]] link
-                let link = `[[${basename}|${variant}]]`;
-                if (variant !== basename && variant.length - basename.length > 3) {
-                    link = `[[${basename}|${basename} (${variant})]]`;
-                }
-
-                // strip tags so we get the exact sentence as it appears in `text`
-                const plain = tagged.replace(/<entity>(.*?)<\/entity>/g, "$1");
-
-                // find its first index in the original
-                const start = original.indexOf(plain);
+                // find the next occurrence of that alias, starting after the last one
+                const fromIndex = lastIndexMap.get(alias) ?? 0;
+                const start = text.indexOf(alias, fromIndex);
                 if (start === -1) continue;
 
-                // collect it
-                if (!sentenceMap.has(plain)) {
-                    sentenceMap.set(plain, { start, links: [] });
-                }
-                sentenceMap.get(plain)!.links.push({ variant, link });
+                replacements.push({ start, length: alias.length, link });
+                lastIndexMap.set(alias, start + alias.length);
             }
         }
 
-        // 2) turn each entry into one Edit object
-        type Edit = { start: number; end: number; replacement: string };
-        const edits: Edit[] = [];
+        // apply from the end so earlier indices stay valid
+        replacements.sort((a, b) => b.start - a.start);
 
-        for (const [plain, { start, links }] of sentenceMap) {
-            let replaced = plain;
-
-            // for each variant→link, do a single replace (so we don't stomp earlier ones)
-            for (const { variant, link } of links) {
-                const wordRe = new RegExp(`\\b${escapeRe(variant)}\\b`);
-                replaced = replaced.replace(wordRe, link);
-            }
-
-            edits.push({ start, end: start + plain.length, replacement: replaced });
+        let result = text;
+        for (const { start, length, link } of replacements) {
+            result = result.slice(0, start) + link + result.slice(start + length);
         }
-
-        // 3) stitch back together from the ORIGINAL, in ascending order
-        edits.sort((a, b) => a.start - b.start);
-        let result = "";
-        let cursor = 0;
-
-        for (const { start, end, replacement } of edits) {
-            result += original.slice(cursor, start) + replacement;
-            cursor = end;
-        }
-        result += original.slice(cursor);
-
         return result;
+    }
+
+    private buildSpellingHelper(
+        misspellings: string[],
+        aliases: string[],
+    ): { misspellingDetector: Fuse<string>; aliasSuggester: Fuse<string> } {
+        return {
+            misspellingDetector: new Fuse(misspellings, { threshold: 0, ignoreLocation: true }),
+            aliasSuggester: new Fuse(aliases, { includeScore: true, ignoreLocation: true, shouldSort: true }),
+        };
+    }
+
+    private correctSpelling(
+        rawAlias: string,
+        spellingHelper: { misspellingDetector: Fuse<string>; aliasSuggester: Fuse<string> },
+    ): string {
+        const { misspellingDetector, aliasSuggester } = spellingHelper;
+
+        const isMisspelled = misspellingDetector.search(rawAlias).length > 0;
+        const bestMatch = aliasSuggester.search(rawAlias)?.[0];
+
+        if (isMisspelled || (bestMatch?.score ?? 1) < 0.25) {
+            return bestMatch?.item || rawAlias;
+        }
+
+        return rawAlias;
+    }
+
+    private extractPlainAndAlias(tagged: string): { plain: string; alias: string } {
+        const alias = (tagged.match(/<entity>(.*?)<\/entity>/) || [])[1] || "";
+        const plain = tagged.replace(/<entity>(.*?)<\/entity>/g, "$1");
+        return { plain, alias };
     }
 
     /** Prompt used to extract entities via LLM */
@@ -463,6 +407,4 @@ export class AutoWikilinkEngine {
             ...
         }
     `;
-
-    readonly defaultOpenAiModel = "gpt-4o";
 }
