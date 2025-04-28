@@ -1,4 +1,4 @@
-import { App, TFile, Vault } from "obsidian";
+import { App, requestUrl, TFile, Vault } from "obsidian";
 import { TranscriptionSettings } from "src/settings";
 
 export class UtilsEngine {
@@ -25,5 +25,39 @@ export class UtilsEngine {
         const sourceFile = this.vault.getFileByPath(sourcePath);
         if (!sourceFile) throw new Error(`Source file not found for path: ${sourcePath}`);
         return sourceFile;
+    }
+
+    readonly defaultOpenAiModel = "gpt-4o"; // TODO: Put in settings
+
+    /** Calls OpenAI chat completions with given input JSON */
+    async callOpenAI(params: {
+        systemPrompt: string;
+        userPrompt: string;
+        responseFormat?: object;
+        model?: string;
+    }): Promise<string> {
+        const { systemPrompt, userPrompt, responseFormat, model } = params;
+
+        const messages = [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+        ];
+        const payload = {
+            model: model ?? this.defaultOpenAiModel,
+            messages,
+            response_format: responseFormat,
+        };
+        const response = await requestUrl({
+            url: "https://api.openai.com/v1/chat/completions",
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${this.settings.openaiKey}`,
+                "Content-Type": "application/json",
+            },
+            contentType: "application/json",
+            body: JSON.stringify(payload),
+        });
+
+        return response.json.choices[0].message.content.trim();
     }
 }
