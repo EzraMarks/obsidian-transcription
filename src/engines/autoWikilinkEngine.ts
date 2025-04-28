@@ -60,7 +60,8 @@ export interface ExtractedEntityWithFileCandidates {
 export interface EntityFileSelection {
     entity: ExtractedEntityWithFileCandidates;
     selectedFile?: EnrichedFile;
-    shouldCreateFile?: boolean;
+    wasManuallyResolved?: boolean;
+    newFileName?: string;
 }
 
 export class AutoWikilinkEngine {
@@ -168,7 +169,7 @@ export class AutoWikilinkEngine {
     private async getFileCandidates(entity: ExtractedEntity, files: EnrichedFile[]): Promise<FileCandidate[]> {
         const fuse = new Fuse(files, {
             keys: ["file.basename", "aliases", "misspellings"], // TODO: Add misspellings frontmatter to my documents...
-            threshold: 0.3,
+            threshold: 0.25,
             ignoreLocation: true,
             includeScore: true,
             useExtendedSearch: true,
@@ -325,7 +326,7 @@ export class AutoWikilinkEngine {
                 // pull out the raw alias
                 const { alias: rawAlias } = this.extractPlainAndAlias(occ.sentence);
                 // pick the best canonical form
-                const alias = this.correctSpelling(rawAlias, spellingHelper);
+                const alias = this.correctSpelling(sel, rawAlias, spellingHelper);
                 const link = `[[${targetName}|${alias}]]`;
 
                 // find the next occurrence of that alias, starting after the last one
@@ -359,12 +360,13 @@ export class AutoWikilinkEngine {
     }
 
     private correctSpelling(
+        fileSelection: EntityFileSelection,
         rawAlias: string,
         spellingHelper: { misspellingDetector: Fuse<string>; aliasSuggester: Fuse<string> },
     ): string {
         const { misspellingDetector, aliasSuggester } = spellingHelper;
 
-        const isMisspelled = misspellingDetector.search(rawAlias).length > 0;
+        const isMisspelled = fileSelection.wasManuallyResolved || misspellingDetector.search(rawAlias).length > 0;
         const bestMatch = aliasSuggester.search(rawAlias)?.[0];
 
         if (isMisspelled || (bestMatch?.score ?? 1) < 0.25) {

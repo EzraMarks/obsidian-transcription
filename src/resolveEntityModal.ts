@@ -1,4 +1,4 @@
-import { App, Modal, Notice } from "obsidian";
+import { App, Modal, Notice, TFile, FuzzySuggestModal, TextComponent } from "obsidian";
 import type { EntityFileSelection, EnrichedFile } from "./engines/autoWikilinkEngine";
 
 export class ResolveEntityModal extends Modal {
@@ -6,6 +6,9 @@ export class ResolveEntityModal extends Modal {
     private readonly unresolved: EntityFileSelection[];
     private readonly allFiles: EnrichedFile[];
     private readonly onComplete: (selections: EntityFileSelection[]) => void;
+
+    private selectedFiles: (TFile | null)[] = [];
+    private newFileComponents: (TextComponent | null)[] = [];
 
     constructor(
         app: App,
@@ -15,9 +18,11 @@ export class ResolveEntityModal extends Modal {
     ) {
         super(app);
         this.selections = selections;
-        this.unresolved = selections.filter((s) => !s.selectedFile && !s.shouldCreateFile);
+        this.unresolved = selections.filter((s) => !s.selectedFile && !s.newFileName);
         this.allFiles = allFiles;
         this.onComplete = onComplete;
+        this.selectedFiles = new Array(this.unresolved.length).fill(null);
+        this.newFileComponents = new Array(this.unresolved.length).fill(null);
     }
 
     onOpen(): void {
@@ -51,8 +56,6 @@ export class ResolveEntityModal extends Modal {
             padding: "8px",
             border: "1px solid var(--background-modifier-border)",
         });
-
-        const inputElements: HTMLInputElement[] = [];
 
         this.unresolved.forEach((entitySel, idx) => {
             const container = scrollContainer.createDiv("resolve-entity-block");
@@ -117,22 +120,7 @@ export class ResolveEntityModal extends Modal {
             const linkRadio = linkOption.createEl("input", {
                 attr: { type: "radio", name: `choice-${idx}`, value: "link", checked: "checked" },
             }) as HTMLInputElement;
-            linkOption.appendText(" Link to existing file: ");
-
-            const input = container.createEl("input", {
-                attr: {
-                    list: `datalist-${idx}`,
-                    name: `input-${idx}`,
-                    placeholder: "Type to search files...",
-                },
-            }) as HTMLInputElement;
-            input.style.width = "100%";
-            inputElements.push(input);
-
-            const datalist = container.createEl("datalist", { attr: { id: `datalist-${idx}` } });
-            this.allFiles.forEach((file) => {
-                datalist.createEl("option", { value: file.file.basename });
-            });
+            linkOption.appendText(" Link to existing file");
 
             const newOption = radioGroup.createEl("label");
             const newRadio = newOption.createEl("input", {
@@ -145,6 +133,56 @@ export class ResolveEntityModal extends Modal {
                 attr: { type: "radio", name: `choice-${idx}`, value: "ignore" },
             }) as HTMLInputElement;
             ignoreOption.appendText(" Ignore (leave plain)");
+
+            const chooseButton = container.createEl("button", { text: "Choose file..." });
+            chooseButton.type = "button";
+            chooseButton.style.width = "100%";
+            chooseButton.style.marginTop = "8px";
+
+            const chosenFileDisplay = container.createEl("div", { text: "No file selected" });
+            chosenFileDisplay.style.fontSize = "smaller";
+            chosenFileDisplay.style.opacity = "0.7";
+
+            const newInput = new TextComponent(container);
+            newInput.inputEl.name = `input-new-${idx}`;
+            newInput.inputEl.placeholder = "New file name...";
+            newInput.setValue(entitySel.entity.entity.entity);
+            newInput.inputEl.style.width = "100%";
+            newInput.inputEl.style.marginTop = "8px";
+            newInput.inputEl.style.display = "none";
+            this.newFileComponents[idx] = newInput;
+
+            chooseButton.onclick = async () => {
+                const modal = new FileSuggestModal(this.app, this.allFiles.map((f) => f.file), this.selectedFiles[idx]);
+                modal.onChoose = (file) => {
+                    this.selectedFiles[idx] = file;
+                    chooseButton.setText(`Change file (Selected: ${file.basename})`);
+                    chosenFileDisplay.setText("");
+                };
+                modal.open();
+            };
+
+            const updateVisibility = () => {
+                if (linkRadio.checked) {
+                    chooseButton.style.display = "block";
+                    chosenFileDisplay.style.display = "block";
+                    newInput.inputEl.style.display = "none";
+                } else if (newRadio.checked) {
+                    chooseButton.style.display = "none";
+                    chosenFileDisplay.style.display = "none";
+                    newInput.inputEl.style.display = "block";
+                } else {
+                    chooseButton.style.display = "none";
+                    chosenFileDisplay.style.display = "none";
+                    newInput.inputEl.style.display = "none";
+                }
+            };
+
+            linkRadio.addEventListener("change", updateVisibility);
+            newRadio.addEventListener("change", updateVisibility);
+            ignoreRadio.addEventListener("change", updateVisibility);
+
+            updateVisibility();
         });
 
         const controls = contentEl.createDiv("resolve-entity-controls");
@@ -155,11 +193,7 @@ export class ResolveEntityModal extends Modal {
 
         form.addEventListener("input", () => {
             applyBtn.disabled = false;
-            const completed = this.unresolved.length;
-            const filled = Array.from(form.querySelectorAll("input[list]"))
-                .map((el) => (el as HTMLInputElement).value.trim())
-                .filter(Boolean).length;
-            progressBar.value = Math.min(completed, filled);
+            progressBar.value = this.unresolved.length;
         });
 
         form.addEventListener("keydown", (e) => {
@@ -173,31 +207,57 @@ export class ResolveEntityModal extends Modal {
             e.preventDefault();
             this.handleApply(form);
         };
-
-        if (inputElements.length > 0) {
-            setTimeout(() => inputElements[0].focus(), 50);
-        }
     }
 
     private handleApply(form: HTMLFormElement): void {
         this.unresolved.forEach((current, idx) => {
             const choice = (form.querySelector(`input[name='choice-${idx}']:checked`) as HTMLInputElement)?.value;
 
+            current.selectedFile = undefined;
+            current.newFileName = undefined;
+            (current as any).wasManuallyResolved = true;
+
             if (choice === "new") {
-                current.shouldCreateFile = true;
-            } else if (choice === "ignore") {
-                // ignored
-            } else {
-                const inputValue = (form.querySelector(`input[name='input-${idx}']`) as HTMLInputElement)?.value.trim();
-                if (!inputValue) return;
-                const match = this.allFiles.find((f) => f.file.basename === inputValue);
-                if (match) {
-                    current.selectedFile = match;
+                const name = this.newFileComponents[idx]?.getValue().trim();
+                if (name) {
+                    current.newFileName = name;
+                }
+            } else if (choice === "link") {
+                const selected = this.selectedFiles[idx];
+                if (selected) {
+                    current.selectedFile = { file: selected, aliases: [], misspellings: [] };
                 }
             }
         });
 
         this.onComplete(this.selections);
         this.close();
+    }
+}
+
+class FileSuggestModal extends FuzzySuggestModal<TFile> {
+    onChoose: (file: TFile) => void = () => {};
+
+    constructor(app: App, private files: TFile[], private initialSelection: TFile | null) {
+        super(app);
+    }
+
+    getItems(): TFile[] {
+        return this.files;
+    }
+
+    getItemText(item: TFile): string {
+        return item.basename;
+    }
+
+    onOpen(): void {
+        super.onOpen();
+        if (this.initialSelection) {
+            this.inputEl.value = this.initialSelection.basename;
+        }
+    }
+
+    onChooseItem(item: TFile, evt: MouseEvent | KeyboardEvent): void {
+        this.onChoose(item);
     }
 }
