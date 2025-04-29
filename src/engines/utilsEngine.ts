@@ -33,10 +33,11 @@ export class UtilsEngine {
     async callOpenAI(params: {
         systemPrompt: string;
         userPrompt: string;
+        temperature?: number;
         responseFormat?: object;
         model?: string;
     }): Promise<string> {
-        const { systemPrompt, userPrompt, responseFormat, model } = params;
+        const { systemPrompt, userPrompt, temperature, responseFormat, model } = params;
 
         const messages = [
             { role: "system", content: systemPrompt },
@@ -45,6 +46,7 @@ export class UtilsEngine {
         const payload = {
             model: model ?? this.defaultOpenAiModel,
             messages,
+            temperature,
             response_format: responseFormat,
         };
         const response = await requestUrl({

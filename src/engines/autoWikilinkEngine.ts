@@ -21,7 +21,7 @@ export interface EntityOccurrence {
 
 /** A single proper-noun (grouped across variants) and all its mentions */
 export interface ExtractedEntity {
-    entity: string;
+    canonicalName: string;
     occurrences: EntityOccurrence[];
 }
 
@@ -30,6 +30,12 @@ export interface EnrichedFile {
     file: TFile;
     aliases: string[];
     misspellings: string[];
+}
+
+export interface NewFile {
+    baseName: string;
+    aliases?: string[];
+    misspellings?: string[];
 }
 
 /** A candidate match between an ExtractedEntity and a file */
@@ -58,10 +64,10 @@ export interface ExtractedEntityWithFileCandidates {
 
 /** The extracted entity being matched and the chosen file */
 export interface EntityFileSelection {
-    entity: ExtractedEntityWithFileCandidates;
+    entityWithFileCandidates: ExtractedEntityWithFileCandidates;
     selectedFile?: EnrichedFile;
+    newFile?: NewFile;
     wasManuallyResolved?: boolean;
-    newFileName?: string;
 }
 
 export class AutoWikilinkEngine {
@@ -80,10 +86,15 @@ export class AutoWikilinkEngine {
 
     /** Main entry point: applies auto-wikilinks to the given text */
     async applyAutoWikilink(input: string, files: TFile[]): Promise<string> {
-        // Step 1: extract entities via LLM
-        const extractedEntities = await this.extractEntities(input, files);
+        // Step 1: tag entities in text via LLM
+        const taggedText = await this.generateTaggedText(input);
 
-        // Step 2: find fuzzy-match candidates
+        console.log("Tagged text", taggedText);
+
+        // Step 2: extract entities from the tagged text
+        const extractedEntities = this.parseTaggedEntitiesFromText(taggedText);
+
+        // Step 3: find fuzzy-match candidates
         const enrichedFiles: EnrichedFile[] = files.map((file) => {
             const aliases = this.app.metadataCache.getFileCache(file)?.frontmatter?.["aliases"];
             const misspellings = this.app.metadataCache.getFileCache(file)?.frontmatter?.["misspellings"];
@@ -108,7 +119,7 @@ export class AutoWikilinkEngine {
         const selections: EntityFileSelection[] = await Promise.all(
             extractedEntitiesWithFileCandidates.map(async (item) => {
                 const selectedFile = item.candidates.length ? await this.selectBestCandidate(item) : undefined;
-                return { entity: item, selectedFile };
+                return { entityWithFileCandidates: item, selectedFile };
             }),
         );
 
@@ -117,7 +128,7 @@ export class AutoWikilinkEngine {
             "Selections (but readable)",
             JSON.stringify(
                 selections.map((it) => ({
-                    entity: it.entity.entity.entity,
+                    entity: it.entityWithFileCandidates.entity.canonicalName,
                     fileChoice: it.selectedFile?.file.path,
                 })),
                 null,
@@ -130,32 +141,94 @@ export class AutoWikilinkEngine {
             new ResolveEntityModal(this.app, selections, enrichedFiles, resolve).open();
         });
 
+        console.log(
+            "Final selections (but readable)",
+            JSON.stringify(
+                finalSelections.map((it) => ({
+                    entity: it.entityWithFileCandidates.entity.canonicalName,
+                    fileChoice: it.selectedFile?.file.path,
+                })),
+                null,
+                2,
+            ),
+        );
+
         // Step 6: replace text with links
-        const output = this.applyLinksToText(input, finalSelections);
+        const output = this.applyLinksToText(taggedText, finalSelections);
         return output;
     }
 
-    private async extractEntities(input: string, files: TFile[]): Promise<ExtractedEntity[]> {
-        const entitiesJson = await this.utilsEngine.callOpenAI({
-            systemPrompt: this.extractReferencesPrompt,
+    // TODO: Filter out entries that are within headers
+
+    /**
+     * Tag entities in the text with <entity id="Canonical Name">...</entity>
+     */
+    async generateTaggedText(input: string): Promise<string> {
+        const systemPrompt = `
+        You are an entity-tagging assistant with strong coreference resolution. Your task is to insert <entity> tags around every explicit mention of a person's name in markdown text.
+
+        Instructions:
+        1. Identify every unique **explicit** reference to a person's name (first, last, or full).
+        2. Wrap each mention with <entity> tags and add an \`id\` attribute set to that person's **most complete name** mentioned anywhere in the text.
+        - Example: I recently read <entity id="The Great Gatsby">Gatsby</entity> by <entity id="F. Scott Fitzgerald">Fitzgerald</entity>.
+        3. Use semantic context and coreference to group different surface forms (e.g., "Gatsby" = "The Great Gatsby").
+        4. If the **same surface form** refers to **different people** in different parts of the text, treat them as different entities.
+        5. Do **not** tag pronouns or vague references (e.g., "she", "my cousin", "the man").
+        6. Preserve the original text exactly, modifying it only by inserting <entity id="...">Name</entity> tags.
+
+        Guidelines:
+        - Only tag names of real or fictional people.
+        - Use only names explicitly present or **strongly implied** by context.
+        - The \`id\` should be the most complete and recognizable name mentioned for each person.
+        - Tag each unique mention only where it appears in the text (no deduping or summaries).
+
+        Output only the modified text with <entity> tags.
+        `.trim();
+
+        const response = await this.utilsEngine.callOpenAI({
+            systemPrompt,
             userPrompt: input,
-            responseFormat: { type: "json_object" },
+            temperature: 0,
         });
 
-        try {
-            const aiResponse: AiExtractEntitiesResponse = JSON.parse(entitiesJson);
-            return Object.entries(aiResponse).map(([key, value]) => {
-                return { entity: key, occurrences: value.occurrences };
-            });
-        } catch (err) {
-            const errorMessage = `
-                AutoWikilink: Failed to parse extracted entities.
-                Input: ${input.slice(0, 500)}${input.length > 500 ? "..." : ""}
-                Response: ${entitiesJson}
-                Error: ${err instanceof Error ? err.message : String(err)}
-            `;
-            throw new Error(errorMessage);
+        return response;
+    }
+
+    parseTaggedEntitiesFromText(taggedText: string): ExtractedEntity[] {
+        const entityRegex = /<entity id="(.*?)">(.*?)<\/entity>/g;
+        const lines = taggedText.split(/\r?\n/);
+
+        const entities: Map<string, ExtractedEntity> = new Map();
+        let currentHeader: string | undefined = undefined;
+
+        for (const line of lines) {
+            const headerMatch = line.match(/^#+ (.+)$/);
+            if (headerMatch) {
+                currentHeader = headerMatch[1].trim();
+            }
+
+            let match;
+            while ((match = entityRegex.exec(line)) !== null) {
+                const [fullMatch, canonicalName, rawText] = match;
+                const col = match.index;
+
+                const occurrence: EntityOccurrence = {
+                    header: currentHeader,
+                    sentence: extractSentence(line, col),
+                };
+
+                if (!entities.has(canonicalName)) {
+                    entities.set(canonicalName, {
+                        canonicalName: canonicalName,
+                        occurrences: [],
+                    });
+                }
+
+                entities.get(canonicalName)!.occurrences.push(occurrence);
+            }
         }
+
+        return Array.from(entities.values());
     }
 
     // TODO: I should be caching, for every file that is to become a file candidate, the full FileCandidate result!
@@ -178,7 +251,7 @@ export class AutoWikilinkEngine {
         // Extract all variants of the entity from its occurrences
         const entityVariants = new Set<string>();
         for (const occurrence of entity.occurrences) {
-            const match = occurrence.sentence.match(/<entity>(.*?)<\/entity>/);
+            const match = occurrence.sentence.match(/<entity\b[^>]*>(.*?)<\/entity>/);
             if (match && match[1]) {
                 entityVariants.add(match[1]);
             }
@@ -309,44 +382,39 @@ export class AutoWikilinkEngine {
         return item.candidates.find((c) => c.enrichedFile.file.path === filePath)?.enrichedFile;
     }
 
-    private applyLinksToText(text: string, selections: EntityFileSelection[]): string {
-        // collect every alias‐to‐link replacement
-        const replacements: { start: number; length: number; link: string }[] = [];
-        // track how far we've already scanned for each alias
-        const lastIndexMap = new Map<string, number>();
+    private applyLinksToText(taggedText: string, selections: EntityFileSelection[]): string {
+        const entityRegex = /<entity id="(.*?)">(.*?)<\/entity>/g;
 
+        const entityToSelection = new Map<string, EntityFileSelection>();
         for (const sel of selections) {
-            if (!sel.selectedFile) continue;
-            const targetName = sel.selectedFile.file.basename;
-            const aliases = [targetName, ...(sel.selectedFile.aliases || [])];
+            entityToSelection.set(sel.entityWithFileCandidates.entity.canonicalName, sel);
 
-            const spellingHelper = this.buildSpellingHelper(sel.selectedFile.misspellings, aliases);
-
-            for (const occ of sel.entity.entity.occurrences) {
-                // pull out the raw alias
-                const { alias: rawAlias } = this.extractPlainAndAlias(occ.sentence);
-                // pick the best canonical form
-                const alias = this.correctSpelling(sel, rawAlias, spellingHelper);
-                const link = `[[${targetName}|${alias}]]`;
-
-                // find the next occurrence of that alias, starting after the last one
-                const fromIndex = lastIndexMap.get(alias) ?? 0;
-                const start = text.indexOf(alias, fromIndex);
-                if (start === -1) continue;
-
-                replacements.push({ start, length: alias.length, link });
-                lastIndexMap.set(alias, start + alias.length);
+            if (sel.newFile) {
+                this.createNewFile("", sel.newFile);
             }
         }
 
-        // apply from the end so earlier indices stay valid
-        replacements.sort((a, b) => b.start - a.start);
+        const replaced = taggedText.replace(entityRegex, (fullMatch, canonicalName, surfaceText) => {
+            const sel = entityToSelection.get(canonicalName);
 
-        let result = text;
-        for (const { start, length, link } of replacements) {
-            result = result.slice(0, start) + link + result.slice(start + length);
-        }
-        return result;
+            const targetName = sel?.selectedFile?.file.basename || sel?.newFile?.baseName;
+
+            if (!targetName) {
+                // No selection → just unwrap the <entity> and keep the surface text
+                return surfaceText;
+            }
+
+            const aliases = [targetName, ...(sel.selectedFile?.aliases ?? sel?.newFile?.aliases ?? [])];
+            const misspellings = sel.selectedFile?.aliases ?? sel?.newFile?.aliases ?? [];
+            const spellingHelper = this.buildSpellingHelper(misspellings, aliases);
+
+            // Perform spelling correction on the surface text
+            const alias = this.correctSpelling(sel, surfaceText, spellingHelper);
+
+            return targetName === alias ? `[[${targetName}]]` : `[[${targetName}|${alias}]]`;
+        });
+
+        return replaced;
     }
 
     private buildSpellingHelper(
@@ -376,37 +444,28 @@ export class AutoWikilinkEngine {
         return rawAlias;
     }
 
-    private extractPlainAndAlias(tagged: string): { plain: string; alias: string } {
-        const alias = (tagged.match(/<entity>(.*?)<\/entity>/) || [])[1] || "";
-        const plain = tagged.replace(/<entity>(.*?)<\/entity>/g, "$1");
-        return { plain, alias };
+    private async createNewFile(folderPath: string, fileData: NewFile): Promise<TFile> {
+        const { baseName, aliases, misspellings } = fileData;
+        const filePath = `${folderPath}/${baseName}.md`;
+
+        // Format today's date as YYYY-MM-DD
+        const today = new Date();
+        const dateCreated = today.toISOString().split("T")[0]; // "2025-04-28" for example
+
+        // Build YAML frontmatter
+        const frontmatterLines = [
+            "---",
+            `date_created: ${dateCreated}`,
+            ...(aliases ? [`aliases:\n${aliases.map((a) => `  - ${a}`).join("\n")}`] : []),
+            ...(misspellings ? [`misspellings:\n${misspellings.map((m) => `  - ${m}`).join("\n")}`] : []),
+            "---",
+        ];
+        const frontmatter = frontmatterLines.join("\n");
+
+        // File content will start with frontmatter
+        const content = `${frontmatter}\n\n`;
+
+        // Create the file
+        return await this.vault.create(filePath, content);
     }
-
-    /** Prompt used to extract entities via LLM */
-    readonly extractReferencesPrompt = `
-        You are a JSON-extraction assistant with strong coreference resolution. Given a journal entry in Markdown (with headings like ## and ###):
-
-        1. Identify every person mentioned by name (proper nouns referring to people only).
-        2. Use semantic context (not just exact text) to group mentions that refer to the same individual, even if the name form varies (e.g. "John" vs. "John Smith").
-        3. If the same surface form (e.g. "John") clearly refers to different people in different contexts or sections, treat them as separate entities.
-        4. For each resulting person, emit an object where the keys are the canonical names of the people, and the values are:
-        - **occurrences**: an array of all sentences in which any variant of that person's name appears, each with:
-            - **header**: the closest preceding Markdown heading (## or ###), or \`null\` if no heading exists above that sentence.
-            - **sentence**: the full sentence, with the name mention wrapped in <entity> and </entity>.
-        5. Never wrap pronouns in <entity>…</entity>; only wrap explicit named mentions.
-
-        Output strictly a JSON object matching this schema:
-
-        {
-            "CanonicalName": {
-                "occurrences": [
-                    {
-                        "header": "HeaderName or null",
-                        "sentence": "Full sentence with <entity>VariantForm</entity> highlighted."
-                    }
-                ]
-            },
-            ...
-        }
-    `;
 }
