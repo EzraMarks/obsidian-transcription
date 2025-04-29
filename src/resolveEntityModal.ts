@@ -18,7 +18,7 @@ export class ResolveEntityModal extends Modal {
     ) {
         super(app);
         this.selections = selections;
-        this.unresolved = selections.filter((s) => !s.selectedFile && !s.newFileName);
+        this.unresolved = selections.filter((s) => !s.selectedFile && !s.newFile?.baseName);
         this.allFiles = allFiles;
         this.onComplete = onComplete;
         this.selectedFiles = new Array(this.unresolved.length).fill(null);
@@ -61,14 +61,16 @@ export class ResolveEntityModal extends Modal {
             const container = scrollContainer.createDiv("resolve-entity-block");
 
             container.createEl("h3", {
-                text: `${entitySel.entity.entity.entity} (${idx + 1}/${this.unresolved.length})`,
+                text: `${entitySel.entityWithFileCandidates.entity.canonicalName} (${idx + 1}/${
+                    this.unresolved.length
+                })`,
             });
 
             const contextWrapper = container.createDiv("resolve-entity-context-wrapper");
             const contextBlock = contextWrapper.createDiv("resolve-entity-context");
             contextBlock.setCssStyles({ marginBottom: "8px", paddingLeft: "8px", fontStyle: "italic", opacity: "0.8" });
 
-            const examples = entitySel.entity.entity.occurrences;
+            const examples = entitySel.entityWithFileCandidates.entity.occurrences;
             const maxInitial = 3;
 
             const renderSentence = (sentence: string) => {
@@ -146,14 +148,18 @@ export class ResolveEntityModal extends Modal {
             const newInput = new TextComponent(container);
             newInput.inputEl.name = `input-new-${idx}`;
             newInput.inputEl.placeholder = "New file name...";
-            newInput.setValue(entitySel.entity.entity.entity);
+            newInput.setValue(entitySel.entityWithFileCandidates.entity.canonicalName);
             newInput.inputEl.style.width = "100%";
             newInput.inputEl.style.marginTop = "8px";
             newInput.inputEl.style.display = "none";
             this.newFileComponents[idx] = newInput;
 
             chooseButton.onclick = async () => {
-                const modal = new FileSuggestModal(this.app, this.allFiles.map((f) => f.file), this.selectedFiles[idx]);
+                const modal = new FileSuggestModal(
+                    this.app,
+                    this.allFiles.map((f) => f.file),
+                    this.selectedFiles[idx],
+                );
                 modal.onChoose = (file) => {
                     this.selectedFiles[idx] = file;
                     chooseButton.setText(`Change file (Selected: ${file.basename})`);
@@ -214,13 +220,13 @@ export class ResolveEntityModal extends Modal {
             const choice = (form.querySelector(`input[name='choice-${idx}']:checked`) as HTMLInputElement)?.value;
 
             current.selectedFile = undefined;
-            current.newFileName = undefined;
+            current.newFile = undefined;
             (current as any).wasManuallyResolved = true;
 
             if (choice === "new") {
                 const name = this.newFileComponents[idx]?.getValue().trim();
                 if (name) {
-                    current.newFileName = name;
+                    current.newFile = { baseName: name };
                 }
             } else if (choice === "link") {
                 const selected = this.selectedFiles[idx];
