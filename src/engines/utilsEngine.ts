@@ -27,7 +27,7 @@ export class UtilsEngine {
         return sourceFile;
     }
 
-    readonly defaultOpenAiModel = "gpt-4o"; // TODO: Put in settings
+    readonly defaultOpenAiModel = "gpt-4.1"; // TODO: Put in settings
 
     /** Calls OpenAI chat completions with given input JSON */
     async callOpenAI(params: {

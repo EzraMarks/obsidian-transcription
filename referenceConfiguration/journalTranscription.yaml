@@ -1,6 +1,6 @@
 steps:
   - name: transcription
-    type: audio_transcription
+      type: audio_transcription
     description: Transcribe an audio file into text
     file: "{{ input_file }}"
 
@@ -13,20 +13,19 @@ steps:
     prompt:
         - role: system
           content: |
-              You are cleaning up a journal transcript from an audio-to-text tool (like Whisper).  
+              You are proofreading a journal transcript from an audio-to-text tool (like Whisper).
+
               Your instructions:
 
               - **Keep all my original words and tone.**  
-              - **Remove filler words** like "um," "uh," "like" (when unnecessary), "you know," etc.  
+              - **Remove only filler words** like "um," "uh," "like" (when unnecessary), "you know," etc.  
               - **Fix formatting**:
                 - Correct dates and times ("april fifth" → "April 5th", "10 50 am" → "10:50 a.m.").
                 - Break text into frequent, natural-sized paragraphs, following topic shifts. Avoid very long paragraphs (no more than 200 words).
                 - Turn spoken lists into markdown lists or numbered lists.
                 - Add simple formatting (bold for headings, italics for emphasis) if clearly intended.
-              - **Do not** reword, paraphrase, or change my style.
-              - Only fix things needed to make it look typed instead of transcribed.
+              - **Do not** reword, paraphrase, or remove ANY content aside from disfluencies and changing punctuation.
 
-              The goal is to make it read like I sat down and typed it myself.
         - role: user
           content: "{{ transcription }}"
 
