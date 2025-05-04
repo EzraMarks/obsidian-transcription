@@ -24,7 +24,7 @@ export class BacklinkEngine {
         return backlinks.reduce((acc, [_, refs]) => acc + refs.length, 0);
     }
 
-    /** Calculates the number of days since the most recent mention */
+    /* Calculates the age in days since the most recent edit on any file that links to this file; proxy for the last time this file was referenced */
     calculateDaysSinceLastBacklinkEdit(backlinks: BacklinksArrayDict): number {
         let mostRecentMention = 0;
 
@@ -39,6 +39,7 @@ export class BacklinkEngine {
 
     getBacklinksForFile(file: TFile): BacklinksArrayDict {
         // A map-like object that maps a source path to an array of backlinks
+        // https://forum.obsidian.md/t/how-to-get-backlinks-for-a-file/45314
         const allBacklinks = (this.app.metadataCache as any).getBacklinksForFile(file).data;
 
         return [...allBacklinks.entries()];

@@ -16,6 +16,7 @@ export interface AiExtractEntitiesResponse {
 /** One sentence in which the entity appears */
 export interface EntityOccurrence {
     header: string | null | undefined;
+    displayName: string;
     sentence: string;
 }
 
@@ -42,8 +43,11 @@ export interface NewFile {
 export interface FileCandidate {
     /** The file */
     enrichedFile: EnrichedFile;
-    /** Fuzzy‑match score (0–1 where 1 is exact) */
+    /** Fuzzy‑match score (0–1 where 0 is exact match) */
     nameMatchScore: number;
+}
+
+export interface EnrichedFileCandidate extends FileCandidate {
     /** Total number of references to this file */
     backlinkCount: number;
     /** Age in days of the most recent edit on any file that links to this file; proxy for the last time this file was referenced */
@@ -86,15 +90,15 @@ export class AutoWikilinkEngine {
 
     /** Main entry point: applies auto-wikilinks to the given text */
     async applyAutoWikilink(input: string, files: TFile[]): Promise<string> {
-        // Step 1: tag entities in text via LLM
+        // Tag entities in text via LLM
         const taggedText = await this.generateTaggedText(input);
 
         console.log("Tagged text", taggedText);
 
-        // Step 2: extract entities from the tagged text
+        // Extract entities from the tagged text
         const extractedEntities = this.parseTaggedEntitiesFromText(taggedText);
 
-        // Step 3: find fuzzy-match candidates
+        // Find fuzzy-match candidates
         const enrichedFiles: EnrichedFile[] = files.map((file) => {
             const aliases = this.app.metadataCache.getFileCache(file)?.frontmatter?.["aliases"];
             const misspellings = this.app.metadataCache.getFileCache(file)?.frontmatter?.["misspellings"];
@@ -115,7 +119,7 @@ export class AutoWikilinkEngine {
 
         console.log("File candidates", extractedEntitiesWithFileCandidates);
 
-        // Step 4: AI selects best candidate
+        // AI selects best candidate
         const selections: EntityFileSelection[] = await Promise.all(
             extractedEntitiesWithFileCandidates.map(async (item) => {
                 const selectedFile = item.candidates.length ? await this.selectBestCandidate(item) : undefined;
@@ -136,7 +140,7 @@ export class AutoWikilinkEngine {
             ),
         );
 
-        // Step 5: human resolve unresolved
+        // Human resolve unresolved
         const finalSelections = await new Promise<EntityFileSelection[]>((resolve) => {
             new ResolveEntityModal(this.app, selections, enrichedFiles, resolve).open();
         });
@@ -153,7 +157,7 @@ export class AutoWikilinkEngine {
             ),
         );
 
-        // Step 6: replace text with links
+        // Replace text with links
         const output = this.applyLinksToText(taggedText, finalSelections);
         return output;
     }
@@ -165,29 +169,30 @@ export class AutoWikilinkEngine {
      */
     async generateTaggedText(input: string): Promise<string> {
         const systemPrompt = `
-        You are an entity-tagging assistant with strong coreference resolution. Your task is to insert <entity> tags around every explicit mention of a person's name in markdown text.
+        You are an entity-tagging assistant with strong coreference resolution.
+        Your task is to insert <entity> tags around every mention of a person's name in markdown text.
 
         Instructions:
-        1. Identify every unique **explicit** reference to a person's name (first, last, or full).
+        1. Identify every reference to a person's name (first, last, or full).
         2. Wrap each mention with <entity> tags and add an \`id\` attribute set to that person's **most complete name** mentioned anywhere in the text.
         - Example: I recently read <entity id="The Great Gatsby">Gatsby</entity> by <entity id="F. Scott Fitzgerald">Fitzgerald</entity>.
         3. Use semantic context and coreference to group different surface forms (e.g., "Gatsby" = "The Great Gatsby").
         4. If the **same surface form** refers to **different people** in different parts of the text, treat them as different entities.
-        5. Do **not** tag pronouns or vague references (e.g., "she", "my cousin", "the man").
+        5. Do not tag pronouns, e.g., "she"/"he"/"the person"
         6. Preserve the original text exactly, modifying it only by inserting <entity id="...">Name</entity> tags.
-
-        Guidelines:
-        - Only tag names of real or fictional people.
-        - Use only names explicitly present or **strongly implied** by context.
-        - The \`id\` should be the most complete and recognizable name mentioned for each person.
-        - Tag each unique mention only where it appears in the text (no deduping or summaries).
 
         Output only the modified text with <entity> tags.
         `.trim();
 
+        const userPrompt = `
+        Tag every mention of a person's name in the following text, without tagging pronouns like he/she/they.
+
+        ${input}
+        `;
+
         const response = await this.utilsEngine.callOpenAI({
             systemPrompt,
-            userPrompt: input,
+            userPrompt,
             temperature: 0,
         });
 
@@ -207,14 +212,23 @@ export class AutoWikilinkEngine {
                 currentHeader = headerMatch[1].trim();
             }
 
+            // If this line is a markdown header, skip entity extraction for this line
+            if (/^#+ /.test(line)) {
+                continue;
+            }
+
             let match;
             while ((match = entityRegex.exec(line)) !== null) {
                 const [fullMatch, canonicalName, rawText] = match;
                 const col = match.index;
 
+                const extractedSentence = extractSentence(line, col);
+                const redactedSentence = this.redactTranscriptionTextForLlm(extractedSentence, fullMatch);
+
                 const occurrence: EntityOccurrence = {
                     header: currentHeader,
-                    sentence: extractSentence(line, col),
+                    displayName: rawText,
+                    sentence: redactedSentence,
                 };
 
                 if (!entities.has(canonicalName)) {
@@ -243,53 +257,27 @@ export class AutoWikilinkEngine {
         const fuse = new Fuse(files, {
             keys: ["file.basename", "aliases", "misspellings"], // TODO: Add misspellings frontmatter to my documents...
             threshold: 0.25,
-            ignoreLocation: true,
             includeScore: true,
             useExtendedSearch: true,
         });
 
         // Extract all variants of the entity from its occurrences
-        const entityVariants = new Set<string>();
-        for (const occurrence of entity.occurrences) {
-            const match = occurrence.sentence.match(/<entity\b[^>]*>(.*?)<\/entity>/);
-            if (match && match[1]) {
-                entityVariants.add(match[1]);
-            }
-        }
+        const entityVariants = new Set(entity.occurrences.map((item) => item.displayName));
 
         const results = fuse.search(Array.from(entityVariants).join("|"));
-        const fileCandidatePromises = results.map(async (r) => {
-            const file = r.item;
+        const fileCandidatePromises = results.map(async (r): Promise<FileCandidate> => {
+            const enrichedFile = r.item;
             if (r.score === undefined) throw new Error("Fuzzy match score is undefined");
             const nameMatchScore: number = 1 - r.score;
-            const backlinks = this.backlinkEngine.getBacklinksForFile(file.file);
-            const backlinkCount = this.backlinkEngine.calculateBacklinkCount(backlinks);
-            const daysSinceLastBacklinkEdit = this.backlinkEngine.calculateDaysSinceLastBacklinkEdit(backlinks);
 
-            // TODO: Filtering criteria needs work
-            if (daysSinceLastBacklinkEdit > 60 && backlinkCount < 100 && nameMatchScore < 0.5) {
-                return undefined;
-            }
-
-            const sampleOccurrences = this.getSampleEntityOccurrences(backlinks);
-            const bodyPreview = this.getBodyPreview(file.file);
-
-            const fileCandidate: FileCandidate = {
-                enrichedFile: file,
-                nameMatchScore,
-                backlinkCount,
-                daysSinceLastBacklinkEdit,
-                sampleOccurrences: await sampleOccurrences,
-                bodyPreview: await bodyPreview,
-            };
-
-            return fileCandidate;
+            return { enrichedFile, nameMatchScore };
         });
 
         const fileCandidates = await Promise.all(fileCandidatePromises);
         return fileCandidates.filter((c): c is FileCandidate => c != undefined);
     }
 
+    /** Retrieves a few examples of the context in which this file has been previously referenced */
     private async getSampleEntityOccurrences(backlinks: BacklinksArrayDict): Promise<EntityOccurrence[]> {
         const backlinkEntries = this.backlinkEngine.getRandomRecentBacklinkEntries(backlinks, 3); // TODO: Add sample size to settings
         const entityOccurrences: (EntityOccurrence | undefined)[] = await Promise.all(
@@ -309,15 +297,21 @@ export class AutoWikilinkEngine {
             const { line: lineNum, col } = reference.position.start;
             const lineText = lines[lineNum] || "";
 
-            const sentence = extractSentence(lineText, col).trim();
             const header = findNearestHeading(lines, lineNum);
+            const extractedSentence = extractSentence(lineText, col).trim();
+            const redactedSentence = this.redactVaultTextForLlm(extractedSentence, backlinkEntry.reference.original);
 
-            return { header: header, sentence };
+            return {
+                header: header,
+                displayName: backlinkEntry.reference.displayText ?? backlinkEntry.reference.link,
+                sentence: redactedSentence,
+            };
         }
 
         return undefined;
     }
 
+    /** Gets the first few lines of the file contents */
     private async getBodyPreview(file: TFile): Promise<string> {
         const content = await this.vault.cachedRead(file);
 
@@ -330,19 +324,46 @@ export class AutoWikilinkEngine {
 
     /** AI selects best candidate or undefined */
     private async selectBestCandidate(item: ExtractedEntityWithFileCandidates): Promise<EnrichedFile | undefined> {
-        const candidates = item.candidates.map((it) => {
+        const enrichedCandidates: EnrichedFileCandidate[] = await Promise.all(
+            item.candidates.map(async (fileCandidate) => {
+                const backlinks = this.backlinkEngine.getBacklinksForFile(fileCandidate.enrichedFile.file);
+                const backlinkCount = this.backlinkEngine.calculateBacklinkCount(backlinks);
+                const daysSinceLastBacklinkEdit = this.backlinkEngine.calculateDaysSinceLastBacklinkEdit(backlinks);
+
+                const sampleOccurrences = await this.getSampleEntityOccurrences(backlinks);
+                const bodyPreview = await this.getBodyPreview(fileCandidate.enrichedFile.file);
+
+                return {
+                    ...fileCandidate,
+                    backlinkCount,
+                    daysSinceLastBacklinkEdit,
+                    sampleOccurrences,
+                    bodyPreview,
+                };
+            }),
+        );
+
+        const candidatesForLlm = enrichedCandidates.map((it) => {
             return {
                 filePath: it.enrichedFile.file.path,
-                aliases: it.enrichedFile.aliases,
-                misspellings: it.enrichedFile.misspellings,
                 popularity: it.backlinkCount,
                 daysSinceLastReferenced: it.daysSinceLastBacklinkEdit,
                 bodyPreview: it.bodyPreview,
-                sampleOccurrences: it.sampleOccurrences,
+                sampleOccurrences: it.sampleOccurrences.map((sampleOccurrence) => ({
+                    header: sampleOccurrence.header,
+                    sentence: sampleOccurrence.sentence,
+                })),
             };
         });
 
+        const occurrencesForLlm = item.entity.occurrences.map((occurrence) => ({
+            header: occurrence.header,
+            sentence: occurrence.sentence,
+        }));
+
         // TODO: Make it so this prompt just returns a numreical score value
+
+        // TODO: Need to take into account nameMatchScore more!
 
         // TODO: Improve this prompt
         const systemPrompt = `You are an entity-to-file resolver.
@@ -359,10 +380,12 @@ export class AutoWikilinkEngine {
         `;
 
         const userPrompt = `
-        Entity:
-        ${JSON.stringify(item.entity, null, 2)}
+        Occurrences in this text:
+        ${JSON.stringify(occurrencesForLlm, null, 2)}
+
+        
         Candidates:
-        ${JSON.stringify(candidates, null, 2)}
+        ${JSON.stringify(candidatesForLlm, null, 2)}
 
         Respond with only the file path or undefined.
         `;
@@ -404,14 +427,14 @@ export class AutoWikilinkEngine {
                 return surfaceText;
             }
 
-            const aliases = [targetName, ...(sel.selectedFile?.aliases ?? sel?.newFile?.aliases ?? [])];
-            const misspellings = sel.selectedFile?.aliases ?? sel?.newFile?.aliases ?? [];
-            const spellingHelper = this.buildSpellingHelper(misspellings, aliases);
+            const displayNames = [targetName, ...(sel.selectedFile?.aliases ?? sel?.newFile?.aliases ?? [])];
+            const misspellings = sel.selectedFile?.misspellings ?? sel?.newFile?.misspellings ?? [];
+            const spellingHelper = this.buildSpellingHelper(misspellings, displayNames);
 
             // Perform spelling correction on the surface text
-            const alias = this.correctSpelling(sel, surfaceText, spellingHelper);
+            const displayName = this.correctSpelling(sel, surfaceText, spellingHelper);
 
-            return targetName === alias ? `[[${targetName}]]` : `[[${targetName}|${alias}]]`;
+            return targetName === displayName ? `[[${targetName}]]` : `[[${targetName}|${displayName}]]`;
         });
 
         return replaced;
@@ -419,29 +442,32 @@ export class AutoWikilinkEngine {
 
     private buildSpellingHelper(
         misspellings: string[],
-        aliases: string[],
-    ): { misspellingDetector: Fuse<string>; aliasSuggester: Fuse<string> } {
+        displayNames: string[],
+    ): { misspellingDetector: Fuse<string>; displayNameSuggester: Fuse<string> } {
         return {
-            misspellingDetector: new Fuse(misspellings, { threshold: 0, ignoreLocation: true }),
-            aliasSuggester: new Fuse(aliases, { includeScore: true, ignoreLocation: true, shouldSort: true }),
+            misspellingDetector: new Fuse(misspellings, { threshold: 0 }),
+            displayNameSuggester: new Fuse(displayNames, {
+                includeScore: true,
+                shouldSort: true,
+            }),
         };
     }
 
     private correctSpelling(
         fileSelection: EntityFileSelection,
-        rawAlias: string,
-        spellingHelper: { misspellingDetector: Fuse<string>; aliasSuggester: Fuse<string> },
+        rawDisplayName: string,
+        spellingHelper: { misspellingDetector: Fuse<string>; displayNameSuggester: Fuse<string> },
     ): string {
-        const { misspellingDetector, aliasSuggester } = spellingHelper;
+        const { misspellingDetector, displayNameSuggester } = spellingHelper;
 
-        const isMisspelled = fileSelection.wasManuallyResolved || misspellingDetector.search(rawAlias).length > 0;
-        const bestMatch = aliasSuggester.search(rawAlias)?.[0];
+        const isMisspelled = fileSelection.wasManuallyResolved || misspellingDetector.search(rawDisplayName).length > 0;
+        const bestMatch = displayNameSuggester.search(rawDisplayName)?.[0];
 
         if (isMisspelled || (bestMatch?.score ?? 1) < 0.25) {
-            return bestMatch?.item || rawAlias;
+            return bestMatch?.item || rawDisplayName;
         }
 
-        return rawAlias;
+        return rawDisplayName;
     }
 
     private async createNewFile(folderPath: string, fileData: NewFile): Promise<TFile> {
@@ -467,5 +493,48 @@ export class AutoWikilinkEngine {
 
         // Create the file
         return await this.vault.create(filePath, content);
+    }
+
+    /**
+     * Redacts a sentence from the vault by:
+     * - Replacing the specific `targetBacklinkSubstring` (e.g. a wikilink like [[Bob Smith]]) with a neutral <entity/> tag.
+     * - Removing all other Obsidian-style wikilinks by replacing them with their visible display name or target text.
+     *
+     * @param text - The full sentence text from the vault.
+     * @param targetBacklinkSubstring - The exact substring to replace with <entity/>.
+     * @returns A sanitized version of the text suitable for LLM input.
+     */
+    private redactVaultTextForLlm(text: string, targetBacklinkSubstring: string): string {
+        const escapedTarget = targetBacklinkSubstring.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const targetRegex = new RegExp(escapedTarget, "g");
+        const redacted = text.replace(targetRegex, "<entity/>");
+
+        const stripped = redacted.replace(/\[\[([^\]]+)\]\]/g, (_, content) => {
+            const pipeIndex = content.indexOf("|");
+            return pipeIndex !== -1 ? content.slice(pipeIndex + 1) : content;
+        });
+
+        return stripped;
+    }
+
+    /**
+     * Redacts a sentence from the transcription output by:
+     * - Replacing the exact `targetEntitySubstring` (e.g. <entity id="X">Bob</entity>) with <entity/>.
+     * - Removing all other <entity>...</entity> tags and leaving their inner text intact.
+     *
+     * @param text - The sentence containing one or more <entity> tags.
+     * @param targetEntitySubstring - The exact <entity>...</entity> span to replace with <entity/>.
+     * @returns The redacted sentence with only the target entity anonymized.
+     */
+    private redactTranscriptionTextForLlm(text: string, targetEntitySubstring: string): string {
+        const entityRegex = /<entity\b[^>]*>(.*?)<\/entity>/g;
+
+        return text.replace(entityRegex, (fullMatch, innerText) => {
+            if (fullMatch === targetEntitySubstring) {
+                return "<entity/>";
+            } else {
+                return innerText;
+            }
+        });
     }
 }
