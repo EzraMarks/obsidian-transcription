@@ -1,22 +1,18 @@
-import { TFile, Vault, App } from "obsidian";
-import Fuse from "fuse.js";
+import { TFile, Vault, App, ItemView } from "obsidian";
 import { TranscriptionSettings } from "src/settings";
 import { StatusBar } from "../status";
-import { BacklinkEngine, BacklinkEntry, BacklinksArrayDict } from "./backlinkEngine";
-import { UtilsEngine } from "./utilsEngine";
-import { extractSentence, findNearestHeading } from "../utils";
-import { ResolveEntityModal } from "src/resolveEntityModal";
+import levenshtein from "js-levenshtein";
 
-export interface AiExtractEntitiesResponse {
-    [canonicalName: string]: {
-        occurrences: EntityOccurrence[];
-    };
-}
+import { BacklinkEngine, BacklinkEntry, BacklinksArrayDict } from "./backlinkEngine";
+import { EnrichedFile, UtilsEngine } from "./utilsEngine";
+import { extractSentence, findNearestHeading, getPhoneticEncoding, PhoneticEncoding } from "../utils";
+import { ResolveEntityModal } from "src/resolveEntityModal";
 
 /** One sentence in which the entity appears */
 export interface EntityOccurrence {
     header: string | null | undefined;
     displayName: string;
+    displayNamePhoneticEncoding: PhoneticEncoding;
     sentence: string;
 }
 
@@ -24,13 +20,6 @@ export interface EntityOccurrence {
 export interface ExtractedEntity {
     canonicalName: string;
     occurrences: EntityOccurrence[];
-}
-
-/** Enriched Obsidian file */
-export interface EnrichedFile {
-    file: TFile;
-    aliases: string[];
-    misspellings: string[];
 }
 
 export interface NewFile {
@@ -41,10 +30,8 @@ export interface NewFile {
 
 /** A candidate match between an ExtractedEntity and a file */
 export interface FileCandidate {
-    /** The file */
     enrichedFile: EnrichedFile;
-    /** Fuzzy‑match score (0–1 where 0 is exact match) */
-    nameMatchScore: number;
+    matchedPhoneticEncoding: PhoneticEncoding;
 }
 
 export interface EnrichedFileCandidate extends FileCandidate {
@@ -77,7 +64,6 @@ export interface EntityFileSelection {
 export class AutoWikilinkEngine {
     private readonly utilsEngine: UtilsEngine;
     private readonly backlinkEngine: BacklinkEngine;
-
     constructor(
         private readonly settings: TranscriptionSettings,
         private readonly vault: Vault,
@@ -99,16 +85,9 @@ export class AutoWikilinkEngine {
         const extractedEntities = this.parseTaggedEntitiesFromText(taggedText);
 
         // Find fuzzy-match candidates
-        const enrichedFiles: EnrichedFile[] = files.map((file) => {
-            const aliases = this.app.metadataCache.getFileCache(file)?.frontmatter?.["aliases"];
-            const misspellings = this.app.metadataCache.getFileCache(file)?.frontmatter?.["misspellings"];
+        const enrichedFiles: EnrichedFile[] = files.map((file) => this.utilsEngine.enrichFile(file));
 
-            return {
-                file: file,
-                aliases: Array.isArray(aliases) ? aliases : aliases ? [aliases] : [],
-                misspellings: Array.isArray(misspellings) ? misspellings : misspellings ? [misspellings] : [],
-            };
-        });
+        console.log("Files", enrichedFiles);
 
         const extractedEntitiesWithFileCandidates: ExtractedEntityWithFileCandidates[] = await Promise.all(
             extractedEntities.map(async (entity) => {
@@ -142,7 +121,7 @@ export class AutoWikilinkEngine {
 
         // Human resolve unresolved
         const finalSelections = await new Promise<EntityFileSelection[]>((resolve) => {
-            new ResolveEntityModal(this.app, selections, enrichedFiles, resolve).open();
+            new ResolveEntityModal(this.app, selections, enrichedFiles, this.utilsEngine, resolve).open();
         });
 
         console.log(
@@ -162,8 +141,6 @@ export class AutoWikilinkEngine {
         return output;
     }
 
-    // TODO: Filter out entries that are within headers
-
     /**
      * Tag entities in the text with <entity id="Canonical Name">...</entity>
      */
@@ -175,7 +152,7 @@ export class AutoWikilinkEngine {
         Instructions:
         1. Identify every reference to a person's name (first, last, or full).
         2. Wrap each mention with <entity> tags and add an \`id\` attribute set to that person's **most complete name** mentioned anywhere in the text.
-        - Example: I recently read <entity id="The Great Gatsby">Gatsby</entity> by <entity id="F. Scott Fitzgerald">Fitzgerald</entity>.
+        - Example: I recently read <entity id="The Great Gatsby">The Great Gatsby</entity> by <entity id="F. Scott Fitzgerald">F. Scott Fitzgerald</entity>.
         3. Use semantic context and coreference to group different surface forms (e.g., "Gatsby" = "The Great Gatsby").
         4. If the **same surface form** refers to **different people** in different parts of the text, treat them as different entities.
         5. Do not tag pronouns, e.g., "she"/"he"/"the person"
@@ -224,10 +201,12 @@ export class AutoWikilinkEngine {
 
                 const extractedSentence = extractSentence(line, col);
                 const redactedSentence = this.redactTranscriptionTextForLlm(extractedSentence, fullMatch);
+                const redactedHeader = currentHeader && this.redactTranscriptionTextForLlm(currentHeader);
 
                 const occurrence: EntityOccurrence = {
-                    header: currentHeader,
+                    header: redactedHeader,
                     displayName: rawText,
+                    displayNamePhoneticEncoding: getPhoneticEncoding(rawText),
                     sentence: redactedSentence,
                 };
 
@@ -245,36 +224,81 @@ export class AutoWikilinkEngine {
         return Array.from(entities.values());
     }
 
-    // TODO: I should be caching, for every file that is to become a file candidate, the full FileCandidate result!
-    // Really I should have a FileCandidate object and an EnrichedFileCandidate object, and that way I can...
-    // - quickly gather all the ExtractedEntityWithFileCandidates
-    // - from that object, derive a deduplicated list of all file candidates
-    // - then make a map from FileCandidate to EnrichedFileCandidate,
-    // - then, using the hashmap, make the ExtractedEntityWithEnrichedFileCandidates
-
     /** Returns fuzzy-matched file candidates for an entity */
-    private async getFileCandidates(entity: ExtractedEntity, files: EnrichedFile[]): Promise<FileCandidate[]> {
-        const fuse = new Fuse(files, {
-            keys: ["file.basename", "aliases", "misspellings"], // TODO: Add misspellings frontmatter to my documents...
-            threshold: 0.25,
-            includeScore: true,
-            useExtendedSearch: true,
-        });
+    private async getFileCandidates(entity: ExtractedEntity, enrichedFiles: EnrichedFile[]): Promise<FileCandidate[]> {
+        // Maximum number of characters that can differ between two metaphone encodings
+        const maxLevenshteinDistance = 1;
 
-        // Extract all variants of the entity from its occurrences
-        const entityVariants = new Set(entity.occurrences.map((item) => item.displayName));
+        const displayNameOccurrences = [...new Set(entity.occurrences.map((item) => item.displayName))];
+        const phoneticEncodings = displayNameOccurrences.map((displayName) => getPhoneticEncoding(displayName));
 
-        const results = fuse.search(Array.from(entityVariants).join("|"));
-        const fileCandidatePromises = results.map(async (r): Promise<FileCandidate> => {
-            const enrichedFile = r.item;
-            if (r.score === undefined) throw new Error("Fuzzy match score is undefined");
-            const nameMatchScore: number = 1 - r.score;
+        return enrichedFiles
+            .map((file): FileCandidate | undefined => {
+                // Find all phonetic encodings from the entity that match any encoding in the file
+                const matchedEncodings = phoneticEncodings.filter((entityEncoding) =>
+                    this.findBestPhoneticEncodingMatch(entityEncoding, file.phoneticEncodings),
+                );
 
-            return { enrichedFile, nameMatchScore };
-        });
+                if (!matchedEncodings.length) {
+                    return undefined;
+                }
 
-        const fileCandidates = await Promise.all(fileCandidatePromises);
-        return fileCandidates.filter((c): c is FileCandidate => c != undefined);
+                // Pick the matched encoding with the longest displayName; this is a proxy for the most complete match
+                const bestMatch = matchedEncodings.reduce((longest, current) =>
+                    current.displayName.length > longest.displayName.length ? current : longest,
+                );
+
+                return { enrichedFile: file, matchedPhoneticEncoding: bestMatch };
+            })
+            .filter((candidate): candidate is FileCandidate => candidate != undefined);
+    }
+
+    /**
+     * Finds the best matching phonetic encoding from a list of candidates.
+     * Returns the candidate encoding that:
+     *   - Has the same soundex encoding as the target
+     *   - Has at least one metaphone encoding within a Levenshtein distance of 1
+     *   - Prefers the closest metaphone match, breaking ties by display name similarity
+     */
+    private findBestPhoneticEncodingMatch(
+        targetEncoding: PhoneticEncoding,
+        candidateEncodings: PhoneticEncoding[],
+        maxLevenshteinDistance: number = 1,
+    ): PhoneticEncoding | undefined {
+        let bestMatch: { encoding: PhoneticEncoding; distance: number; displayNameDistance: number } | undefined;
+
+        for (const candidate of candidateEncodings) {
+            // Only consider candidates with the same soundex encoding
+            if (targetEncoding.soundexEncoding !== candidate.soundexEncoding) continue;
+
+            // Compare all metaphone encodings between target and candidate
+            for (const targetMetaphone of targetEncoding.metaphoneEncodings) {
+                for (const candidateMetaphone of candidate.metaphoneEncodings) {
+                    const metaphoneDistance = levenshtein(targetMetaphone, candidateMetaphone);
+
+                    if (metaphoneDistance > maxLevenshteinDistance) continue;
+
+                    // Also compare the display names for tie-breaking
+                    const displayNameDistance = levenshtein(targetEncoding.displayName, candidate.displayName);
+
+                    const isBetterMatch =
+                        !bestMatch ||
+                        metaphoneDistance < bestMatch.distance ||
+                        (metaphoneDistance === bestMatch.distance &&
+                            displayNameDistance < bestMatch.displayNameDistance);
+
+                    if (isBetterMatch) {
+                        bestMatch = {
+                            encoding: candidate,
+                            distance: metaphoneDistance,
+                            displayNameDistance,
+                        };
+                    }
+                }
+            }
+        }
+
+        return bestMatch?.encoding;
     }
 
     /** Retrieves a few examples of the context in which this file has been previously referenced */
@@ -300,10 +324,13 @@ export class AutoWikilinkEngine {
             const header = findNearestHeading(lines, lineNum);
             const extractedSentence = extractSentence(lineText, col).trim();
             const redactedSentence = this.redactVaultTextForLlm(extractedSentence, backlinkEntry.reference.original);
+            const displayName = backlinkEntry.reference.displayText ?? backlinkEntry.reference.link;
+            const displayNamePhoneticEncoding = getPhoneticEncoding(displayName);
 
             return {
-                header: header,
-                displayName: backlinkEntry.reference.displayText ?? backlinkEntry.reference.link,
+                header,
+                displayName,
+                displayNamePhoneticEncoding,
                 sentence: redactedSentence,
             };
         }
@@ -343,13 +370,16 @@ export class AutoWikilinkEngine {
             }),
         );
 
-        const candidatesForLlm = enrichedCandidates.map((it) => {
+        const candidatesForLlm = enrichedCandidates.map((item) => {
+            const nameMatchScore = item.matchedPhoneticEncoding.displayName.length;
+
             return {
-                filePath: it.enrichedFile.file.path,
-                popularity: it.backlinkCount,
-                daysSinceLastReferenced: it.daysSinceLastBacklinkEdit,
-                bodyPreview: it.bodyPreview,
-                sampleOccurrences: it.sampleOccurrences.map((sampleOccurrence) => ({
+                filePath: item.enrichedFile.file.path,
+                popularity: item.backlinkCount,
+                daysSinceLastReferenced: item.daysSinceLastBacklinkEdit,
+                nameMatchScore,
+                bodyPreview: item.bodyPreview,
+                sampleOccurrences: item.sampleOccurrences.map((sampleOccurrence) => ({
                     header: sampleOccurrence.header,
                     sentence: sampleOccurrence.sentence,
                 })),
@@ -361,22 +391,21 @@ export class AutoWikilinkEngine {
             sentence: occurrence.sentence,
         }));
 
-        // TODO: Make it so this prompt just returns a numreical score value
-
-        // TODO: Need to take into account nameMatchScore more!
-
         // TODO: Improve this prompt
         const systemPrompt = `You are an entity-to-file resolver.
         Given:
          - An entity, including the context of where that name appears in the current text
          - A list of candidate files, including contexts in which that name has appeared in the past
-        Your job is to pick the one file which is the most likely match for the entity in question. Also take note
-        of the popularity (higher is better) and daysSinceLastReferenced (lower is better) of the candidate, which should be prioritized
-        to maximize popularity and minimize daysSinceLastReferenced. Pay no attention to the spelling of the entities; it is not important.
+        Your job is to pick the one file which is the most likely match for the entity in question, or return "undefined" if you are unsure.
+
+        Take into account:
+         - The nameMatchScore (longer is better)
+         - The popularity (higher means the person is someone that is referenced often)
+         - The daysSinceLastReferenced (lower means this person was recently referenced)
+        
         Reply with exactly one of:
          - The file's path (exact string, no quotes or extra text)
-         - "undefined"
-        If you are really unsure, reply "undefined", otherwise choose the best file.
+         - "undefined" if you think none of the provided candidates are a match.
         `;
 
         const userPrompt = `
@@ -387,7 +416,7 @@ export class AutoWikilinkEngine {
         Candidates:
         ${JSON.stringify(candidatesForLlm, null, 2)}
 
-        Respond with only the file path or undefined.
+        Respond with only the file path or "undefined".
         `;
 
         // console.log("Prompts are", systemPrompt, userPrompt); // TODO: Remove
@@ -429,10 +458,9 @@ export class AutoWikilinkEngine {
 
             const displayNames = [targetName, ...(sel.selectedFile?.aliases ?? sel?.newFile?.aliases ?? [])];
             const misspellings = sel.selectedFile?.misspellings ?? sel?.newFile?.misspellings ?? [];
-            const spellingHelper = this.buildSpellingHelper(misspellings, displayNames);
 
             // Perform spelling correction on the surface text
-            const displayName = this.correctSpelling(sel, surfaceText, spellingHelper);
+            const displayName = this.correctSpelling(sel, surfaceText, misspellings, displayNames);
 
             return targetName === displayName ? `[[${targetName}]]` : `[[${targetName}|${displayName}]]`;
         });
@@ -440,34 +468,21 @@ export class AutoWikilinkEngine {
         return replaced;
     }
 
-    private buildSpellingHelper(
-        misspellings: string[],
-        displayNames: string[],
-    ): { misspellingDetector: Fuse<string>; displayNameSuggester: Fuse<string> } {
-        return {
-            misspellingDetector: new Fuse(misspellings, { threshold: 0 }),
-            displayNameSuggester: new Fuse(displayNames, {
-                includeScore: true,
-                shouldSort: true,
-            }),
-        };
-    }
-
     private correctSpelling(
         fileSelection: EntityFileSelection,
         rawDisplayName: string,
-        spellingHelper: { misspellingDetector: Fuse<string>; displayNameSuggester: Fuse<string> },
+        displayNames: string[],
+        misspellings: string[],
     ): string {
-        const { misspellingDetector, displayNameSuggester } = spellingHelper;
+        const isMisspelled = misspellings.includes(rawDisplayName) || fileSelection.wasManuallyResolved;
 
-        const isMisspelled = fileSelection.wasManuallyResolved || misspellingDetector.search(rawDisplayName).length > 0;
-        const bestMatch = displayNameSuggester.search(rawDisplayName)?.[0];
+        const bestMatch = this.findBestPhoneticEncodingMatch(
+            getPhoneticEncoding(rawDisplayName),
+            displayNames.map((str) => getPhoneticEncoding(str)),
+            isMisspelled ? Infinity : 1,
+        );
 
-        if (isMisspelled || (bestMatch?.score ?? 1) < 0.25) {
-            return bestMatch?.item || rawDisplayName;
-        }
-
-        return rawDisplayName;
+        return bestMatch?.displayName || rawDisplayName;
     }
 
     private async createNewFile(folderPath: string, fileData: NewFile): Promise<TFile> {
@@ -526,7 +541,7 @@ export class AutoWikilinkEngine {
      * @param targetEntitySubstring - The exact <entity>...</entity> span to replace with <entity/>.
      * @returns The redacted sentence with only the target entity anonymized.
      */
-    private redactTranscriptionTextForLlm(text: string, targetEntitySubstring: string): string {
+    private redactTranscriptionTextForLlm(text: string, targetEntitySubstring?: string): string {
         const entityRegex = /<entity\b[^>]*>(.*?)<\/entity>/g;
 
         return text.replace(entityRegex, (fullMatch, innerText) => {
