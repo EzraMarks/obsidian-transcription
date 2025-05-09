@@ -32,6 +32,7 @@
     "license": "MIT",
     "devDependencies": {
         "@types/he": "^1.2.3",
+        "@types/js-levenshtein": "^1.1.3",
         "@types/node": "^16.11.6",
         "@types/nunjucks": "^3.2.6",
         "@types/which": "^2.0.1",
@@ -47,10 +48,12 @@
     },
     "dependencies": {
         "date-fns": "^2.29.3",
-        "fuse.js": "^7.1.0",
+        "double-metaphone": "^2.0.1",
         "he": "^1.2.0",
+        "js-levenshtein": "^1.1.6",
         "minimatch": "^10.0.1",
         "nunjucks": "^3.2.4",
+        "soundex-code": "^2.0.1",
         "tus-js-client": "^3.1.1",
         "yaml": "^2.7.1"
     }

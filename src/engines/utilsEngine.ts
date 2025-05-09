@@ -1,5 +1,15 @@
 import { App, requestUrl, TFile, Vault } from "obsidian";
 import { TranscriptionSettings } from "src/settings";
+import { getPhoneticEncoding, PhoneticEncoding, toArray } from "src/utils";
+
+/** Enriched Obsidian file */
+export interface EnrichedFile {
+    file: TFile;
+    aliases: string[];
+    misspellings: string[];
+    // Array of all phonetic encodings of the file's name or aliases
+    phoneticEncodings: PhoneticEncoding[];
+}
 
 export class UtilsEngine {
     constructor(
@@ -25,6 +35,21 @@ export class UtilsEngine {
         const sourceFile = this.vault.getFileByPath(sourcePath);
         if (!sourceFile) throw new Error(`Source file not found for path: ${sourcePath}`);
         return sourceFile;
+    }
+
+    enrichFile(file: TFile): EnrichedFile {
+        const aliases = toArray(this.app.metadataCache.getFileCache(file)?.frontmatter?.["aliases"]);
+        const misspellings = toArray(this.app.metadataCache.getFileCache(file)?.frontmatter?.["misspellings"]);
+        const phoneticEncodings = [file.basename, ...aliases, ...misspellings].flatMap((name) =>
+            getPhoneticEncoding(name),
+        );
+
+        return {
+            file,
+            aliases,
+            misspellings,
+            phoneticEncodings,
+        };
     }
 
     readonly defaultOpenAiModel = "gpt-4.1"; // TODO: Put in settings

@@ -1,10 +1,17 @@
 import { App, Modal, Notice, TFile, FuzzySuggestModal, TextComponent } from "obsidian";
-import type { EntityFileSelection, EnrichedFile } from "./engines/autoWikilinkEngine";
+import type { EntityFileSelection } from "./engines/autoWikilinkEngine";
+import { getPhoneticEncoding } from "./utils";
+import { EnrichedFile, UtilsEngine } from "./engines/utilsEngine";
 
+/**
+ * @file
+ * @author Generated with help from GPT-4.1, edited by Ezra Marks
+ */
 export class ResolveEntityModal extends Modal {
     private readonly selections: EntityFileSelection[];
     private readonly unresolved: EntityFileSelection[];
     private readonly allFiles: EnrichedFile[];
+    private readonly utilsEngine: UtilsEngine;
     private readonly onComplete: (selections: EntityFileSelection[]) => void;
 
     private selectedFiles: (TFile | null)[] = [];
@@ -14,12 +21,14 @@ export class ResolveEntityModal extends Modal {
         app: App,
         selections: EntityFileSelection[],
         allFiles: EnrichedFile[],
+        utilsEngine: UtilsEngine,
         onComplete: (s: EntityFileSelection[]) => void,
     ) {
         super(app);
         this.selections = selections;
         this.unresolved = selections.filter((s) => !s.selectedFile && !s.newFile?.baseName);
         this.allFiles = allFiles;
+        this.utilsEngine = utilsEngine;
         this.onComplete = onComplete;
         this.selectedFiles = new Array(this.unresolved.length).fill(null);
         this.newFileComponents = new Array(this.unresolved.length).fill(null);
@@ -231,7 +240,7 @@ export class ResolveEntityModal extends Modal {
             } else if (choice === "link") {
                 const selected = this.selectedFiles[idx];
                 if (selected) {
-                    current.selectedFile = { file: selected, aliases: [], misspellings: [] };
+                    current.selectedFile = this.utilsEngine.enrichFile(selected);
                 }
             }
         });
