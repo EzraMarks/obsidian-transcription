@@ -1,6 +1,5 @@
-import { App, Modal, Notice, TFile, FuzzySuggestModal, TextComponent } from "obsidian";
+import { App, Modal, Notice, TFile, FuzzySuggestModal, TextComponent, FuzzyMatch } from "obsidian";
 import type { EntityFileSelection } from "./engines/autoWikilinkEngine";
-import { getPhoneticEncoding } from "./utils";
 import { EnrichedFile, UtilsEngine } from "./engines/utilsEngine";
 
 /**
@@ -13,6 +12,7 @@ export class ResolveEntityModal extends Modal {
     private readonly allFiles: EnrichedFile[];
     private readonly utilsEngine: UtilsEngine;
     private readonly onComplete: (selections: EntityFileSelection[]) => void;
+    private isApplying: boolean = false; // Flag to track if we're applying changes
 
     private selectedFiles: (TFile | null)[] = [];
     private newFileComponents: (TextComponent | null)[] = [];
@@ -43,7 +43,17 @@ export class ResolveEntityModal extends Modal {
         this.render();
     }
 
-    onClose(): void {}
+    onClose(): void {
+        // Only reset selections if we're not applying changes
+        if (!this.isApplying) {
+            this.unresolved.forEach((current) => {
+                current.wasManuallyResolved = true;
+                current.selectedFile = undefined;
+                current.newFile = undefined;
+            });
+            this.onComplete(this.selections);
+        }
+    }
 
     private render(): void {
         const { contentEl } = this;
@@ -51,12 +61,6 @@ export class ResolveEntityModal extends Modal {
 
         const form = contentEl.createEl("form");
         form.addClass("resolve-entity-form");
-
-        const progressBar = contentEl.createEl("progress");
-        progressBar.max = this.unresolved.length;
-        progressBar.value = 0;
-        progressBar.style.width = "100%";
-        progressBar.style.marginBottom = "12px";
 
         const scrollContainer = form.createDiv("resolve-entity-scroll");
         scrollContainer.setCssStyles({
@@ -127,32 +131,48 @@ export class ResolveEntityModal extends Modal {
             const radioGroup = container.createDiv("radio-group");
             radioGroup.setCssStyles({ marginTop: "8px", marginBottom: "8px" });
 
+            const hasCandidates =
+                entitySel.entityWithFileCandidates.candidates &&
+                entitySel.entityWithFileCandidates.candidates.length > 0;
+
+            // Create radio options
             const linkOption = radioGroup.createEl("label");
             const linkRadio = linkOption.createEl("input", {
-                attr: { type: "radio", name: `choice-${idx}`, value: "link", checked: "checked" },
+                attr: {
+                    type: "radio",
+                    name: `choice-${idx}`,
+                    value: "link",
+                    ...(hasCandidates ? { checked: "checked" } : {}), // Preselect 'Link' if candidates exist
+                },
             }) as HTMLInputElement;
-            linkOption.appendText(" Link to existing file");
+            linkOption.appendText(" Link");
 
             const newOption = radioGroup.createEl("label");
             const newRadio = newOption.createEl("input", {
                 attr: { type: "radio", name: `choice-${idx}`, value: "new" },
             }) as HTMLInputElement;
-            newOption.appendText(" Create a new file");
+            newOption.appendText(" New file");
 
             const ignoreOption = radioGroup.createEl("label");
             const ignoreRadio = ignoreOption.createEl("input", {
-                attr: { type: "radio", name: `choice-${idx}`, value: "ignore" },
+                attr: {
+                    type: "radio",
+                    name: `choice-${idx}`,
+                    value: "ignore",
+                    ...(!hasCandidates ? { checked: "checked" } : {}), // Only preselect 'Ignore' if no candidates
+                },
             }) as HTMLInputElement;
-            ignoreOption.appendText(" Ignore (leave plain)");
+            ignoreOption.appendText(" Ignore");
 
-            const chooseButton = container.createEl("button", { text: "Choose file..." });
+            const chooseButton = container.createEl("button", { text: "Choose File" });
             chooseButton.type = "button";
             chooseButton.style.width = "100%";
             chooseButton.style.marginTop = "8px";
 
-            const chosenFileDisplay = container.createEl("div", { text: "No file selected" });
-            chosenFileDisplay.style.fontSize = "smaller";
-            chosenFileDisplay.style.opacity = "0.7";
+            // Update button text if a file is selected
+            if (this.selectedFiles[idx]) {
+                chooseButton.setText(`Selected: ${this.selectedFiles[idx]?.basename}`);
+            }
 
             const newInput = new TextComponent(container);
             newInput.inputEl.name = `input-new-${idx}`;
@@ -164,15 +184,27 @@ export class ResolveEntityModal extends Modal {
             this.newFileComponents[idx] = newInput;
 
             chooseButton.onclick = async () => {
+                // Prioritize entity candidates in the file list
+                const candidateFiles =
+                    entitySel.entityWithFileCandidates.candidates?.map((c) => c.enrichedFile.file) || [];
+                const otherFiles = this.allFiles
+                    .map((f) => f.file)
+                    .filter((file) => !candidateFiles.some((cf) => cf.path === file.path));
+
+                // Combine lists with candidates first
+                const prioritizedFiles = [...candidateFiles, ...otherFiles];
+
                 const modal = new FileSuggestModal(
                     this.app,
-                    this.allFiles.map((f) => f.file),
+                    prioritizedFiles,
                     this.selectedFiles[idx],
+                    candidateFiles, // Pass candidate files for styling
                 );
                 modal.onChoose = (file) => {
                     this.selectedFiles[idx] = file;
-                    chooseButton.setText(`Change file (Selected: ${file.basename})`);
-                    chosenFileDisplay.setText("");
+                    chooseButton.setText(`Selected: ${file.basename}`);
+                    linkRadio.checked = true; // Auto-select the link option when a file is chosen
+                    updateVisibility();
                 };
                 modal.open();
             };
@@ -180,15 +212,12 @@ export class ResolveEntityModal extends Modal {
             const updateVisibility = () => {
                 if (linkRadio.checked) {
                     chooseButton.style.display = "block";
-                    chosenFileDisplay.style.display = "block";
                     newInput.inputEl.style.display = "none";
                 } else if (newRadio.checked) {
                     chooseButton.style.display = "none";
-                    chosenFileDisplay.style.display = "none";
                     newInput.inputEl.style.display = "block";
                 } else {
                     chooseButton.style.display = "none";
-                    chosenFileDisplay.style.display = "none";
                     newInput.inputEl.style.display = "none";
                 }
             };
@@ -197,6 +226,7 @@ export class ResolveEntityModal extends Modal {
             newRadio.addEventListener("change", updateVisibility);
             ignoreRadio.addEventListener("change", updateVisibility);
 
+            // Initialize visibility based on current radio selection
             updateVisibility();
         });
 
@@ -204,15 +234,10 @@ export class ResolveEntityModal extends Modal {
 
         const applyBtn = controls.createEl("button", { text: "Apply" });
         applyBtn.type = "submit";
-        applyBtn.disabled = true;
-
-        form.addEventListener("input", () => {
-            applyBtn.disabled = false;
-            progressBar.value = this.unresolved.length;
-        });
+        applyBtn.disabled = false;
 
         form.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" && !applyBtn.disabled) {
+            if (e.key === "Enter") {
                 e.preventDefault();
                 applyBtn.click();
             }
@@ -225,6 +250,8 @@ export class ResolveEntityModal extends Modal {
     }
 
     private handleApply(form: HTMLFormElement): void {
+        this.isApplying = true; // Set the flag before processing
+
         this.unresolved.forEach((current, idx) => {
             const choice = (form.querySelector(`input[name='choice-${idx}']:checked`) as HTMLInputElement)?.value;
 
@@ -252,9 +279,17 @@ export class ResolveEntityModal extends Modal {
 
 class FileSuggestModal extends FuzzySuggestModal<TFile> {
     onChoose: (file: TFile) => void = () => {};
+    private candidateFilePaths: Set<string>;
 
-    constructor(app: App, private files: TFile[], private initialSelection: TFile | null) {
+    constructor(
+        app: App,
+        private files: TFile[],
+        private initialSelection: TFile | null,
+        candidateFiles: TFile[] = [],
+    ) {
         super(app);
+        // Store the paths of candidate files for styling later
+        this.candidateFilePaths = new Set(candidateFiles.map((file) => file.path));
     }
 
     getItems(): TFile[] {
@@ -269,6 +304,20 @@ class FileSuggestModal extends FuzzySuggestModal<TFile> {
         super.onOpen();
         if (this.initialSelection) {
             this.inputEl.value = this.initialSelection.basename;
+        }
+    }
+
+    renderSuggestion(fuzzyMatch: FuzzyMatch<TFile>, el: HTMLElement): void {
+        super.renderSuggestion(fuzzyMatch, el);
+
+        // Apply bold styling to candidate files
+        const item = fuzzyMatch.item;
+        if (this.candidateFilePaths.has(item.path)) {
+            // Add a class to the element itself
+            el.addClass("is-candidate");
+
+            // Apply bold style to the element content
+            el.style.fontWeight = "bold";
         }
     }
 

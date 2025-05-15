@@ -89,9 +89,14 @@ export class AutoWikilinkEngine {
 
         // AI selects best candidate
         const selections: EntityFileSelection[] = await Promise.all(
-            extractedEntitiesWithFileCandidates.map(async (item) => {
-                const selectedFile = item.candidates.length ? await this.selectBestCandidate(item) : undefined;
-                return { entityWithFileCandidates: item, selectedFile };
+            extractedEntitiesWithFileCandidates.map(async (entityWithFileCandidates) => {
+                const selectedFile = entityWithFileCandidates.candidates.length
+                    ? await this.selectBestCandidate(entityWithFileCandidates)
+                    : undefined;
+
+                // TODO: Make it so that entityWithFileCandidates has its candidates sorted by most to least likely.
+
+                return { entityWithFileCandidates: entityWithFileCandidates, selectedFile };
             }),
         );
 
