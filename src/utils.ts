@@ -40,15 +40,46 @@ export function biasedSample<T>(list: T[], sampleSize: number, biasStrength = 2)
 }
 
 /**
- * Pulls out a sentence-length snippet around the given column index.
+ * @author this function was primarily AI-generated
+ *
+ * Extracts the sentence containing the given column index from the line.
+ * If the sentence is unusually short, includes a few words of context on either side.
  * Adds ellipses if the snippet doesn't start or end at the line boundaries.
  */
 export function extractSentence(line: string, col: number, contextWords = 14): string {
+    // Standard sentence boundary: . ! ? possibly followed by quotes/brackets and whitespace
+    const sentenceRegex = /[^.!?]*[.!?]+["')\]]*\s*|[^.!?]+$/g;
+    let match: RegExpExecArray | null;
+    let sentenceStart = 0;
+    let sentenceEnd = line.length;
+
+    // Find the sentence containing the col position
+    while ((match = sentenceRegex.exec(line)) !== null) {
+        const start = match.index;
+        const end = start + match[0].length;
+        if (col >= start && col < end) {
+            sentenceStart = start;
+            sentenceEnd = end;
+            break;
+        }
+    }
+
+    // Fallback to whole line if not found
+    const snippet = line.slice(sentenceStart, sentenceEnd).trim();
+
+    // If the sentence is long enough, just return it (with ellipses if needed)
+    const wordCount = snippet.split(/\s+/).length;
+    if (wordCount >= contextWords || (sentenceStart === 0 && sentenceEnd === line.length)) {
+        const prefix = sentenceStart > 0 ? "…" : "";
+        const suffix = sentenceEnd < line.length ? "…" : "";
+        return `${prefix}${snippet}${suffix}`;
+    }
+
+    // Otherwise, expand contextWords on either side (by word)
     const words = line.split(/\s+/);
+    // Find the word index that includes the col position
     let charCount = 0;
     let targetWordIndex = 0;
-
-    // Find the word index that includes the col position
     for (let i = 0; i < words.length; i++) {
         const word = words[i];
         const start = charCount;
@@ -60,13 +91,12 @@ export function extractSentence(line: string, col: number, contextWords = 14): s
         charCount = end + 1; // +1 for the space
     }
 
-    const start = Math.max(0, targetWordIndex - contextWords);
-    const end = Math.min(words.length, targetWordIndex + contextWords + 1);
-    const snippet = words.slice(start, end).join(" ");
-
-    const prefix = start > 0 ? "…" : "";
-    const suffix = end < words.length ? "…" : "";
-    return `${prefix}${snippet}${suffix}`;
+    const startWord = Math.max(0, targetWordIndex - Math.floor(contextWords / 2));
+    const endWord = Math.min(words.length, targetWordIndex + Math.ceil(contextWords / 2) + 1);
+    const expanded = words.slice(startWord, endWord).join(" ");
+    const prefix = startWord > 0 ? "…" : "";
+    const suffix = endWord < words.length ? "…" : "";
+    return `${prefix}${expanded}${suffix}`;
 }
 
 /** Walks backward from `lineNum` looking for the closest Markdown heading (## or ###) */
@@ -84,6 +114,17 @@ export interface PhoneticEncoding {
     displayName: string; // E.g. "Aiden"
     soundexEncoding: string; // E.g. "A450"
     metaphoneEncodings: string[]; // E.g. ["AIDN", "EADN"]
+}
+
+export interface PhoneticMatch {
+    // The encoding that was matched
+    candidateEncoding: PhoneticEncoding;
+    // The encoding that was being matched against
+    targetEncoding: PhoneticEncoding;
+    // The levenshtein distance between the candidate and target phonetic encodings
+    phoneticDistance: number;
+    // The levenshtein distance between the candidate and target display names
+    displayNameDistance: number;
 }
 
 export function getPhoneticEncoding(name: string): PhoneticEncoding {

@@ -56,7 +56,7 @@ export class UtilsEngine {
 
     /** Calls OpenAI chat completions with given input JSON */
     async callOpenAI(params: {
-        systemPrompt: string;
+        systemPrompt?: string;
         userPrompt: string;
         temperature?: number;
         responseFormat?: object;
@@ -65,7 +65,7 @@ export class UtilsEngine {
         const { systemPrompt, userPrompt, temperature, responseFormat, model } = params;
 
         const messages = [
-            { role: "system", content: systemPrompt },
+            ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
             { role: "user", content: userPrompt },
         ];
         const payload = {

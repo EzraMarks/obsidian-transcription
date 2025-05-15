@@ -230,7 +230,7 @@ export class ResolveEntityModal extends Modal {
 
             current.selectedFile = undefined;
             current.newFile = undefined;
-            (current as any).wasManuallyResolved = true;
+            current.wasManuallyResolved = true;
 
             if (choice === "new") {
                 const name = this.newFileComponents[idx]?.getValue().trim();
