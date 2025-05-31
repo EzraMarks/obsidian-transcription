@@ -306,15 +306,30 @@ export class AutoWikilinkEngine {
     }
 
     /** Retrieves a few examples of the context in which this file has been previously referenced */
-    private async getSampleEntityOccurrences(backlinks: BacklinksArrayDict): Promise<EntityOccurrence[]> {
+    private async getSampleEntityOccurrences(
+        enrichedFile: EnrichedFile,
+        backlinks: BacklinksArrayDict,
+    ): Promise<EntityOccurrence[]> {
         const backlinkEntries = this.backlinkEngine.getRandomRecentBacklinkEntries(backlinks, 3); // TODO: Add sample size to settings
+
+        const namesToRedact = this.getMatchingNamesForFile(enrichedFile);
+
         const entityOccurrences: (EntityOccurrence | undefined)[] = await Promise.all(
-            backlinkEntries.map((it) => this.getEntityOccurrence(it)),
+            backlinkEntries.map((it) => {
+                // Sorted by length descending because redactVaultTextForLlm expects this input order
+                const sortedNamesToRedact = (
+                    it.reference.displayText ? [...namesToRedact, it.reference.displayText] : [...namesToRedact]
+                ).sort((a, b) => b.length - a.length);
+                return this.getEntityOccurrence(it, sortedNamesToRedact);
+            }),
         );
         return entityOccurrences.filter((it): it is EntityOccurrence => it != undefined);
     }
 
-    private async getEntityOccurrence(backlinkEntry: BacklinkEntry): Promise<EntityOccurrence | undefined> {
+    private async getEntityOccurrence(
+        backlinkEntry: BacklinkEntry,
+        sortedNamesToRedact: string[],
+    ): Promise<EntityOccurrence | undefined> {
         const { sourcePath, reference } = backlinkEntry;
         const file = this.utilsEngine.getFileOrThrow(sourcePath);
         const content = await this.app.vault.cachedRead(file);
@@ -326,13 +341,14 @@ export class AutoWikilinkEngine {
             const lineText = lines[lineNum] || "";
 
             const header = findNearestHeading(lines, lineNum);
+            const redactedHeader = header && this.redactVaultTextForLlm(header, sortedNamesToRedact);
             const extractedSentence = extractSentence(lineText, col).trim();
-            const redactedSentence = this.redactVaultTextForLlm(extractedSentence, backlinkEntry.reference.original);
+            const redactedSentence = this.redactVaultTextForLlm(extractedSentence, sortedNamesToRedact);
             const displayName = backlinkEntry.reference.displayText ?? backlinkEntry.reference.link;
             const displayNamePhoneticEncoding = getPhoneticEncoding(displayName);
 
             return {
-                header,
+                header: redactedHeader,
                 displayName,
                 displayNamePhoneticEncoding,
                 sentence: redactedSentence,
@@ -574,6 +590,8 @@ export class AutoWikilinkEngine {
             {
                 "matchingFilePaths": string[]  // List of file paths that are plausible matches
             }
+
+            Remember, even the most strange alternative spellings and misspellings are valid matches.
         `.trim();
 
         const rawResponse = await this.utilsEngine.callOpenAI({
@@ -611,13 +629,15 @@ export class AutoWikilinkEngine {
         candidates: FileCandidate[],
     ): Promise<FileCandidate | undefined> {
         const enrichedCandidates = await Promise.all(
-            candidates.map(async (fileCandidate) => {
+            candidates.map(async (fileCandidate, idx) => {
                 const backlinks = this.backlinkEngine.getBacklinksForFile(fileCandidate.enrichedFile.file);
                 const backlinkCount = this.backlinkEngine.calculateBacklinkCount(backlinks);
                 const daysSinceLastBacklinkEdit = this.backlinkEngine.calculateDaysSinceLastBacklinkEdit(backlinks);
 
-                const sampleOccurrences = await this.getSampleEntityOccurrences(backlinks);
+                const sampleOccurrences = await this.getSampleEntityOccurrences(fileCandidate.enrichedFile, backlinks);
                 const bodyPreview = await this.getBodyPreview(fileCandidate.enrichedFile.file);
+
+                const candidateId = `candidate_${idx + 1}`;
 
                 return {
                     ...fileCandidate,
@@ -625,9 +645,17 @@ export class AutoWikilinkEngine {
                     daysSinceLastBacklinkEdit,
                     sampleOccurrences,
                     bodyPreview,
+                    candidateId,
                 };
             }),
         );
+
+        // Build a map from candidateId to enrichedCandidate for easy lookup. We do this rather than exposing file paths to the AI,
+        // because otherwise the AI may inadvertently try to match files based on name spelling rather than context, which is not desired.
+        const candidateIdToCandidate = new Map<string, any>();
+        for (const candidate of enrichedCandidates) {
+            candidateIdToCandidate.set(candidate.candidateId, candidate);
+        }
 
         const systemPrompt = `
             You are an AI that helps match mentions of entities in text to their corresponding profile pages.
@@ -644,11 +672,11 @@ export class AutoWikilinkEngine {
 
             Respond ONLY with a JSON string in this format:
             {
-                "selectedFilePath": string | "undefined" // The file path of the best matching candidate, or "undefined" if you cannot confidently select one
+                "selectedCandidateId": string | "undefined" // The identifier of the best matching candidate, or "undefined" if you cannot confidently select one
             }
 
             - If you are not confident in any match, or if the entity is new, return "undefined".
-            - Otherwise, return the file path of the best matching candidate.
+            - Otherwise, return the identifier of the best matching candidate.
         `.trim();
 
         const userPrompt = `
@@ -663,7 +691,7 @@ ${[
     ),
     "",
     "Candidate Profiles:",
-    ...enrichedCandidates.map((candidate, idx) => {
+    ...enrichedCandidates.map((candidate) => {
         const occurrences = candidate.sampleOccurrences
             .map(
                 (occ, occIdx) =>
@@ -673,8 +701,7 @@ ${[
             )
             .join("\n");
         return (
-            `  - Candidate ${idx + 1}:\n` +
-            `      File Path: ${candidate.enrichedFile.file.path}\n` +
+            `  - Candidate ID: ${candidate.candidateId}\n` +
             `      Backlink Count: ${candidate.backlinkCount}\n` +
             `      Days Since Last Backlink Edit: ${candidate.daysSinceLastBacklinkEdit}\n` +
             `      Body Preview:\n` +
@@ -701,20 +728,21 @@ ${[
             responseFormat: { type: "json_object" },
         });
 
-        let selectedFilePath: string | undefined;
+        let selectedCandidateId: string | undefined;
         try {
-            const aiResponse = JSON.parse(rawResponse) as { selectedFilePath: string };
-            selectedFilePath = aiResponse.selectedFilePath;
+            const aiResponse = JSON.parse(rawResponse) as { selectedCandidateId: string };
+            selectedCandidateId = aiResponse.selectedCandidateId;
         } catch (e) {
             console.error("Failed to parse AI response in selectFromFinalCandidates:", rawResponse, e);
             return undefined;
         }
 
-        if (!selectedFilePath || selectedFilePath === "undefined") {
+        if (!selectedCandidateId || selectedCandidateId === "undefined") {
             return undefined;
         }
 
-        return enrichedCandidates.find((c) => c.enrichedFile.file.path === selectedFilePath);
+        const selectedCandidate = candidateIdToCandidate.get(selectedCandidateId);
+        return selectedCandidate;
     }
 
     // TOOD: Make is parameterizable whether we link all occurrences or only the first occurrence per line for each entity
@@ -827,17 +855,20 @@ ${[
 
     /**
      * Redacts a sentence from the vault by:
-     * - Replacing the specific `targetBacklinkSubstring` (e.g. a wikilink like [[Bob Smith]]) with a neutral <entity/> tag.
+     * - Replacing all occurrences of any name in `namesToRedact` (e.g. "Bob Smith") with a neutral <entity/> tag.
      * - Removing all other Obsidian-style wikilinks by replacing them with their visible display name or target text.
      *
      * @param text - The full sentence text from the vault.
-     * @param targetBacklinkSubstring - The exact substring to replace with <entity/>.
+     * @param sortedNamesToRedact - An array of strings to replace with <entity/> (already sorted by length descending).
      * @returns A sanitized version of the text suitable for LLM input.
      */
-    private redactVaultTextForLlm(text: string, targetBacklinkSubstring: string): string {
-        const escapedTarget = targetBacklinkSubstring.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const targetRegex = new RegExp(escapedTarget, "g");
-        const redacted = text.replace(targetRegex, "<entity/>");
+    private redactVaultTextForLlm(text: string, sortedNamesToRedact: string[]): string {
+        let redacted = text;
+        for (const name of sortedNamesToRedact) {
+            const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const nameRegex = new RegExp(escapedName, "g");
+            redacted = redacted.replace(nameRegex, "<entity/>");
+        }
 
         const stripped = redacted.replace(/\[\[([^\]]+)\]\]/g, (_, content) => {
             const pipeIndex = content.indexOf("|");
