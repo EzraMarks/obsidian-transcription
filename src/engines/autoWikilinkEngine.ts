@@ -152,7 +152,7 @@ export class AutoWikilinkEngine {
             5. Do not tag pronouns, e.g., "she"/"he"/"the person"
             6. Preserve the original text exactly, modifying it only by inserting <entity id="...">Name</entity> tags.
 
-            Output only the modified text with <entity> tags.
+            Return the entire markdown input, with no content removed and with these <entity> tags added.
         `.trim();
 
         const userPrompt = `
