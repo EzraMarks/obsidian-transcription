@@ -21,7 +21,7 @@ export class AudioTranscriptionEngine {
 
         const formData = new FormData();
         formData.append("file", new Blob([fileContent]), file.name);
-        formData.append("model", "whisper-1");
+        formData.append("model", "gpt-4o-transcribe");
 
         const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
             method: "POST",
@@ -30,7 +30,7 @@ export class AudioTranscriptionEngine {
         });
 
         if (!response.ok) {
-            throw new Error(`Whisper API error: ${response.status}`);
+            throw new Error(`Transcription API error: ${response.status}`);
         }
 
         const { text } = await response.json();

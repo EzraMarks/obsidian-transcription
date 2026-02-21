@@ -2,6 +2,7 @@ import { TFile, Vault, App, ItemView } from "obsidian";
 import { TranscriptionSettings } from "src/settings";
 import { StatusBar } from "../status";
 import levenshtein from "js-levenshtein";
+import { z } from "zod";
 
 import { BacklinkEngine, BacklinkEntry, BacklinksArrayDict } from "./backlinkEngine";
 import { EnrichedFile, UtilsEngine } from "./utilsEngine";
@@ -454,16 +455,15 @@ export class AutoWikilinkEngine {
             ${entity.occurrences.map((occ) => occ.sentence).join("\n\n")}
         `.trim();
 
-        const response = await this.utilsEngine.callOpenAI({
+        console.log(`Is newly introduced AI user prompt for ${entity.canonicalName}:`, userPrompt);
+
+        const result = await this.utilsEngine.callOpenAIStructured({
             systemPrompt,
             userPrompt,
             model: "gpt-4.1-nano",
-            responseFormat: { type: "json_object" },
+            schemaName: "entity_discovery",
+            schema: z.object({ wasJustDiscovered: z.boolean() }),
         });
-
-        console.log(`Is newly introduced AI user prompt for ${entity.canonicalName}:`, userPrompt);
-
-        const result = JSON.parse(response) as { wasJustDiscovered: boolean };
         return result.wasJustDiscovered;
     }
 
@@ -494,14 +494,13 @@ export class AutoWikilinkEngine {
             Name 2: ${candidateDisplayName}
         `.trim();
 
-        const response = await this.utilsEngine.callOpenAI({
+        const result = await this.utilsEngine.callOpenAIStructured({
             systemPrompt,
             userPrompt,
             model: "gpt-4.1-nano",
-            responseFormat: { type: "json_object" },
+            schemaName: "name_match",
+            schema: z.object({ isSameName: z.boolean() }),
         });
-
-        const result = JSON.parse(response) as { isSameName: boolean };
         return result.isSameName;
     }
 
@@ -594,20 +593,17 @@ export class AutoWikilinkEngine {
             Remember, even the most strange alternative spellings and misspellings are valid matches.
         `.trim();
 
-        const rawResponse = await this.utilsEngine.callOpenAI({
-            userPrompt: prompt,
-            model: "gpt-4.1-nano",
-            responseFormat: { type: "json_object" },
-        });
-
-        // Parse the AI response as a JSON object
         let filePaths: string[] = [];
         try {
-            const result = JSON.parse(rawResponse) as { matchingFilePaths: string[] };
+            const result = await this.utilsEngine.callOpenAIStructured({
+                userPrompt: prompt,
+                model: "gpt-4.1-nano",
+                schemaName: "candidate_filter",
+                schema: z.object({ matchingFilePaths: z.array(z.string()) }),
+            });
             filePaths = result.matchingFilePaths;
         } catch (e) {
-            console.error("Failed to parse AI response in narrowDownCandidatesByName:", rawResponse, e);
-            // Fallback: return all candidates
+            console.error("Failed to parse AI response in narrowDownCandidatesByName:", e);
             return candidates;
         }
 
@@ -721,19 +717,18 @@ ${[
         console.log(`Select from final candidates AI system prompt for ${entity.canonicalName}:`, systemPrompt);
         console.log(`Select from final candidates AI user prompt for ${entity.canonicalName}:`, userPrompt);
 
-        const rawResponse = await this.utilsEngine.callOpenAI({
-            systemPrompt,
-            userPrompt,
-            model: "gpt-4.1-mini",
-            responseFormat: { type: "json_object" },
-        });
-
         let selectedCandidateId: string | undefined;
         try {
-            const aiResponse = JSON.parse(rawResponse) as { selectedCandidateId: string };
-            selectedCandidateId = aiResponse.selectedCandidateId;
+            const result = await this.utilsEngine.callOpenAIStructured({
+                systemPrompt,
+                userPrompt,
+                model: "gpt-4.1-mini",
+                schemaName: "candidate_selection",
+                schema: z.object({ selectedCandidateId: z.string() }),
+            });
+            selectedCandidateId = result.selectedCandidateId;
         } catch (e) {
-            console.error("Failed to parse AI response in selectFromFinalCandidates:", rawResponse, e);
+            console.error("Failed to parse AI response in selectFromFinalCandidates:", e);
             return undefined;
         }
 

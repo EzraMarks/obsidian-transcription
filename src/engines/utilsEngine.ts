@@ -1,6 +1,7 @@
 import { App, requestUrl, TFile, Vault } from "obsidian";
 import { TranscriptionSettings } from "src/settings";
 import { getPhoneticEncoding, PhoneticEncoding, toArray } from "src/utils";
+import { z } from "zod";
 
 /** Enriched Obsidian file */
 export interface EnrichedFile {
@@ -9,6 +10,11 @@ export interface EnrichedFile {
     misspellings: string[];
     // Array of all phonetic encodings of the file's name or aliases
     phoneticEncodings: PhoneticEncoding[];
+}
+
+function toOpenAIResponseFormat(name: string, schema: z.ZodObject<z.ZodRawShape>) {
+    const { $schema, ...jsonSchema } = z.toJSONSchema(schema) as Record<string, unknown>;
+    return { type: "json_schema" as const, json_schema: { name, strict: true, schema: jsonSchema } };
 }
 
 export class UtilsEngine {
@@ -86,5 +92,18 @@ export class UtilsEngine {
         });
 
         return response.json.choices[0].message.content.trim();
+    }
+
+    async callOpenAIStructured<T extends z.ZodObject<z.ZodRawShape>>(params: {
+        systemPrompt?: string;
+        userPrompt: string;
+        temperature?: number;
+        model?: string;
+        schemaName: string;
+        schema: T;
+    }): Promise<z.infer<T>> {
+        const { schemaName, schema, ...rest } = params;
+        const response = await this.callOpenAI({ ...rest, responseFormat: toOpenAIResponseFormat(schemaName, schema) });
+        return schema.parse(JSON.parse(response));
     }
 }

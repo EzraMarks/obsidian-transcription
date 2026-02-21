@@ -31,7 +31,6 @@ interface TranscriptionSettings {
     verbosity: number;
     openaiKey: string;
     pipelineDefinitionsFolder: string;
-    openaiCustomModel: string;
 }
 
 const DEFAULT_SETTINGS: TranscriptionSettings = {
@@ -39,7 +38,6 @@ const DEFAULT_SETTINGS: TranscriptionSettings = {
     verbosity: 1,
     openaiKey: "",
     pipelineDefinitionsFolder: "",
-    openaiCustomModel: "",
 };
 
 class TranscriptionSettingTab extends PluginSettingTab {
