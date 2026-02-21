@@ -27,8 +27,14 @@ export class PipelineEngine {
         this.utilsEngine = new UtilsEngine(settings, vault, app);
     }
 
-    async runPipeline(activeFile: TFile, inputFile: TFile): Promise<string> {
-        const pipelineDefinition = await this.parsePipelineDefinition();
+    getPipelineFiles(): TFile[] {
+        const folder = this.app.vault.getFolderByPath(this.settings.pipelineDefinitionsFolder);
+        if (!folder) return [];
+        return folder.children.filter((f): f is TFile => f instanceof TFile && f.extension === "md");
+    }
+
+    async runPipeline(activeFile: TFile, inputFile: TFile, pipelineFile: TFile): Promise<string> {
+        const pipelineDefinition = await this.parsePipelineDefinition(pipelineFile);
         if (!pipelineDefinition.steps?.length) {
             throw new Error("Pipeline has no steps.");
         }
@@ -161,16 +167,9 @@ export class PipelineEngine {
         return he.decode(nunjucks.renderString(templatedString, context));
     }
 
-    private async parsePipelineDefinition(): Promise<PipelineDefinition> {
-        const { pipelineDefinitionPath } = this.settings;
-        const promptChainFile = this.app.vault.getFileByPath(pipelineDefinitionPath);
-
-        if (!promptChainFile) {
-            throw new Error(`Prompt chain file not found at path: ${pipelineDefinitionPath}`);
-        }
-
+    private async parsePipelineDefinition(file: TFile): Promise<PipelineDefinition> {
         try {
-            const content = await this.app.vault.read(promptChainFile);
+            const content = await this.app.vault.read(file);
             return this.parsePromptChainSpecFile(content);
         } catch (error) {
             console.error("Error while reading or parsing the prompt chain file:", error);

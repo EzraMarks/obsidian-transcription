@@ -3,8 +3,8 @@
     "name": "Transcription",
     "version": "3.4.0",
     "minAppVersion": "0.15.0",
-    "description": "Transcription 3.0, now with Swiftink.io domain-aware speech-to-text! Create high-quality text transcriptions from any media file, on any device. Best-in-class ASR",
-    "author": "djmango",
-    "authorUrl": "https://github.com/djmango",
+    "description": "Automatically transcribe audio files and run customizable AI-powered steps—cleanup, formatting, summarization, and auto-linking—to generate clean, structured Markdown notes.",
+    "author": "Ezra Marks",
+    "authorUrl": "https://github.com/EzraMarks",
     "isDesktopOnly": false
 }
