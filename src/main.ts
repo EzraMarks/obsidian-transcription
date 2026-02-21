@@ -12,6 +12,7 @@ import {
 import { StatusBar } from "./status";
 import { TranscriptionSettings, DEFAULT_SETTINGS, TranscriptionSettingTab } from "./settings";
 import { PipelineEngine } from "./pipelineEngine";
+import { UserCancelledError } from "./engines/autoWikilinkEngine";
 import { TranscriptionModal } from "./transcriptionModal";
 
 export default class Transcription extends Plugin {
@@ -122,6 +123,10 @@ export default class Transcription extends Plugin {
 
             await this.app.vault.modify(parent_file, fileText);
         } catch (error) {
+            if (error instanceof UserCancelledError) {
+                new Notice("Transcription cancelled.");
+                return;
+            }
             if (this.settings.debug) console.log(error);
             new Notice(`Error transcribing file: ${error}`, 10 * 1000);
         } finally {

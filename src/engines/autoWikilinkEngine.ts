@@ -43,12 +43,32 @@ export interface ExtractedEntityWithFileCandidates {
     candidates: FileCandidate[];
 }
 
+/** How confident the AI is in its file selection for an entity. */
+export enum SelectionConfidence {
+    /** The AI picked from multiple surviving candidates — a judgment call that may be wrong. */
+    Uncertain = "uncertain",
+    /** No matching file was found — the entity may be new or too ambiguous to resolve. */
+    Unmatched = "unmatched",
+    /** A single candidate survived all filtering — the AI is reasonably confident in this match. */
+    Likely = "likely",
+    /** The AI is highly confident — strong recent context and clear alignment with the candidate. */
+    Certain = "certain",
+}
+
 /** The extracted entity being matched and the chosen file */
 export interface EntityFileSelection {
     entityWithFileCandidates: ExtractedEntityWithFileCandidates;
     selectedFile?: EnrichedFile;
     newFile?: NewFile;
     wasManuallyResolved?: boolean;
+    confidence: SelectionConfidence;
+}
+
+export class UserCancelledError extends Error {
+    constructor() {
+        super("User cancelled");
+        this.name = "UserCancelledError";
+    }
 }
 
 export class AutoWikilinkEngine {
@@ -91,13 +111,13 @@ export class AutoWikilinkEngine {
         // AI selects best candidate
         const selections: EntityFileSelection[] = await Promise.all(
             extractedEntitiesWithFileCandidates.map(async (entityWithFileCandidates) => {
-                const selectedFile = entityWithFileCandidates.candidates.length
+                const { selectedFile, confidence } = entityWithFileCandidates.candidates.length
                     ? await this.selectBestCandidate(entityWithFileCandidates)
-                    : undefined;
+                    : { selectedFile: undefined, confidence: SelectionConfidence.Unmatched };
 
                 // TODO: Make it so that entityWithFileCandidates has its candidates sorted by most to least likely.
 
-                return { entityWithFileCandidates: entityWithFileCandidates, selectedFile };
+                return { entityWithFileCandidates, selectedFile, confidence };
             }),
         );
 
@@ -115,9 +135,13 @@ export class AutoWikilinkEngine {
         );
 
         // Human resolve unresolved
-        const finalSelections = await new Promise<EntityFileSelection[]>((resolve) => {
+        const finalSelections = await new Promise<EntityFileSelection[] | null>((resolve) => {
             new ResolveEntityModal(this.app, selections, enrichedFiles, this.utilsEngine, resolve).open();
         });
+
+        if (finalSelections === null) {
+            throw new UserCancelledError();
+        }
 
         console.log(
             "Final selections (but readable)",
@@ -130,6 +154,9 @@ export class AutoWikilinkEngine {
                 2,
             ),
         );
+
+        // Persist any new transcription spellings as misspellings on the target files
+        await this.updateMisspellingsFromSelections(finalSelections);
 
         // Replace text with links
         const output = this.applyLinksToText(taggedText, finalSelections);
@@ -371,30 +398,30 @@ export class AutoWikilinkEngine {
     }
 
     /** AI selects best candidate or undefined */
-    private async selectBestCandidate(item: ExtractedEntityWithFileCandidates): Promise<EnrichedFile | undefined> {
+    private async selectBestCandidate(
+        item: ExtractedEntityWithFileCandidates,
+    ): Promise<{ selectedFile: EnrichedFile | undefined; confidence: SelectionConfidence }> {
         if (item.candidates.length === 0) {
-            return undefined;
+            return { selectedFile: undefined, confidence: SelectionConfidence.Unmatched };
         }
-
-        const isEntityReferencedByFullName = this.isEntityReferencedByFullName(item.entity);
 
         // If the entity is only referenced by first name, check if it's newly introduced.
         // If it seems like the entity is newly introduced, assume it's unresolvable, otherwise it may get
         // spurrious matches with other entities that have the same first name.
-        if (!isEntityReferencedByFullName) {
-            const isUnresolvable = await this.isEntityNewlyIntroduced(item.entity);
-            if (isUnresolvable) {
+        if (!this.isEntityReferencedByFullName(item.entity)) {
+            const isNewlyIntroduced = await this.isEntityNewlyIntroduced(item.entity);
+            if (isNewlyIntroduced) {
                 console.log(`${item.entity.canonicalName} is newly introduced, skipping`);
-                return undefined;
+                return { selectedFile: undefined, confidence: SelectionConfidence.Unmatched };
             }
         }
 
-        // If there's only one candidate, check if it's a perfect match
+        // If there's only one candidate, check if it's a perfect phonetic match
         if (item.candidates.length === 1) {
             const candidate = item.candidates[0];
             const isPhoneticMatchValid = await this.isPhoneticMatchValid(candidate.matchedPhoneticEncoding);
             if (isPhoneticMatchValid) {
-                return candidate.enrichedFile;
+                return { selectedFile: candidate.enrichedFile, confidence: SelectionConfidence.Likely };
             }
         }
 
@@ -402,16 +429,23 @@ export class AutoWikilinkEngine {
 
         const narrowedCandidates = await this.narrowDownCandidatesByName(item.entity, item.candidates);
 
-        if (narrowedCandidates.length <= 1) {
-            return narrowedCandidates[0]?.enrichedFile;
+        if (narrowedCandidates.length === 0) {
+            return { selectedFile: undefined, confidence: SelectionConfidence.Unmatched };
+        }
+
+        if (narrowedCandidates.length === 1) {
+            return { selectedFile: narrowedCandidates[0].enrichedFile, confidence: SelectionConfidence.Likely };
         }
 
         console.log(`Narrowed candidates for ${item.entity.canonicalName}:`, narrowedCandidates);
 
-        const selectedCandidate = await this.selectFromFinalCandidates(item.entity, narrowedCandidates);
+        const { candidate: selectedCandidate, confidence } = await this.selectFromFinalCandidates(item.entity, narrowedCandidates);
         console.log("Select best candidate AI response", selectedCandidate);
 
-        return selectedCandidate?.enrichedFile;
+        return {
+            selectedFile: selectedCandidate?.enrichedFile,
+            confidence: selectedCandidate ? confidence : SelectionConfidence.Unmatched,
+        };
     }
 
     /** Returns true if the entity is referenced by its full name at least once */
@@ -425,33 +459,18 @@ export class AutoWikilinkEngine {
      */
     private async isEntityNewlyIntroduced(entity: ExtractedEntity): Promise<boolean> {
         const systemPrompt = `
-            You are an AI that helps determine if this is the first time the author has interacted with or mentioned an entity.
-            Given a list of sentences where an entity appears, determine if this is the first time the author has encountered or written about this entity.
+            You are reading journal entries and determining whether a person is being encountered for the FIRST TIME in the author's life.
 
-            ONLY respond that this is the first time ("wasJustDiscovered": true) if it is VERY CLEAR and UNAMBIGUOUS from the context that the entity is being introduced for the first time.
-            If there is any doubt, ambiguity, or lack of strong evidence, you MUST assume that the entity has been mentioned or interacted with before ("wasJustDiscovered": false).
+            Return true ONLY if the text explicitly introduces them as new — e.g. "met X for the first time", "was introduced to X", "X just joined our team", "just started talking to X".
+            Return false for all other cases, including neutral or ambiguous references.
 
-            This is the first time the author has interacted with the entity ONLY IF:
-            1. The context explicitly introduces the entity as new (e.g. "I met X's friend Y for the first time", "I was introduced to Y", "Y just joined our team", "I just discovered Y", "I just read X for the first time").
-            2. There are clear, explicit statements that this is the author's first interaction or mention of the entity.
-
-            This is NOT the first time if:
-            1. The context is ambiguous, neutral, or could be interpreted either way.
-            2. The entity is referred to in a way that suggests the author is already familiar with it (e.g. being used in a context that assumes familiarity).
-            3. The entity is referenced in a way that assumes the reader already knows what it is.
-            4. The context suggests the author has interacted with or mentioned this entity before.
-
-            When in doubt, ALWAYS default to "wasJustDiscovered": false.
-
-            Respond with a JSON object in this format:
-            {
-                "wasJustDiscovered": boolean
-            }
+            Default to false when in doubt.
         `.trim();
 
         const userPrompt = `
-            Context sentences:
+            Person: ${entity.canonicalName}
 
+            Context sentences:
             ${entity.occurrences.map((occ) => occ.sentence).join("\n\n")}
         `.trim();
 
@@ -623,7 +642,7 @@ export class AutoWikilinkEngine {
     private async selectFromFinalCandidates(
         entity: ExtractedEntity,
         candidates: FileCandidate[],
-    ): Promise<FileCandidate | undefined> {
+    ): Promise<{ candidate: FileCandidate | undefined; confidence: SelectionConfidence }> {
         const enrichedCandidates = await Promise.all(
             candidates.map(async (fileCandidate, idx) => {
                 const backlinks = this.backlinkEngine.getBacklinksForFile(fileCandidate.enrichedFile.file);
@@ -654,90 +673,132 @@ export class AutoWikilinkEngine {
         }
 
         const systemPrompt = `
-            You are an AI that helps match mentions of entities in text to their corresponding profile pages.
+            You help match mentions of entities in text to their corresponding profile.
             Given:
              - An entity (referred to as <entity/>) and the context in which they appear in the current text
              - A list of candidate profiles, each with their content and previous mentions
             Your task is to determine if this entity matches any existing profile, or if it is something new.
 
-            Also consider the following metrics for each candidate:
-            - backlink count (indicates how often this entity has been mentioned in the past, so the AI should prefer candidates with more backlinks)
-            - days since last backlink edit (indicates how recently this entity has been mentioned, so the AI should prefer candidates with more recent backlinks)
-            - body preview (some content of this candidate entity's file)
-            - sample occurrences (indicates the specific ways in which this candidateentity is mentioned, so the AI should prefer candidates with more similar occurrences)
+            Use these metrics to guide your decision:
+            - days since last backlink edit — THIS IS THE MOST IMPORTANT SIGNAL. Strongly prefer candidates mentioned very recently (low values). A candidate mentioned 3 days ago is almost certainly more relevant than one mentioned 2 years ago.
+            - backlink count — prefer candidates mentioned more often overall
+            - sample occurrences — prefer candidates whose prior mention contexts resemble how <entity/> is used here
+            - body preview — use to understand what the candidate's file is actually about
 
-            Respond ONLY with a JSON string in this format:
-            {
-                "selectedCandidateId": string | "undefined" // The identifier of the best matching candidate, or "undefined" if you cannot confidently select one
-            }
+            Also return a confidence level for your selection:
+            - "certain" — you are highly confident: strong recent context, clear name and context alignment, little ambiguity
+            - "likely" — reasonable evidence supports the match, but it is not definitive
+            - "uncertain" — best guess from available candidates; could plausibly be wrong
 
-            - If you are not confident in any match, or if the entity is new, return "undefined".
-            - Otherwise, return the identifier of the best matching candidate.
+            - If you cannot confidently select any candidate, set selectedCandidateId to "undefined" and confidence to "uncertain".
+            - Otherwise, return the identifier of the best matching candidate and your confidence.
         `.trim();
 
         const userPrompt = `
 Sample context of the entity to match (shown as <entity/>):
 ${[
-    "Entity Occurrences:",
-    ...entity.occurrences.map(
-        (occurrence, idx) =>
-            `  - Occurrence ${idx + 1}:\n` +
-            (occurrence.header ? `      Header: ${occurrence.header}\n` : "") +
-            `      Sentence: ${occurrence.sentence}`,
-    ),
-    "",
-    "Candidate Profiles:",
-    ...enrichedCandidates.map((candidate) => {
-        const occurrences = candidate.sampleOccurrences
-            .map(
-                (occ, occIdx) =>
-                    `      - Occurrence ${occIdx + 1}:\n` +
-                    (occ.header ? `          Header: ${occ.header}\n` : "") +
-                    `          Sentence: ${occ.sentence}`,
-            )
-            .join("\n");
-        return (
-            `  - Candidate ID: ${candidate.candidateId}\n` +
-            `      Backlink Count: ${candidate.backlinkCount}\n` +
-            `      Days Since Last Backlink Edit: ${candidate.daysSinceLastBacklinkEdit}\n` +
-            `      Body Preview:\n` +
-            (candidate.bodyPreview
-                ? candidate.bodyPreview
-                      .split("\n")
-                      .map((line) => `        ${line}`)
-                      .join("\n")
-                : "        (No preview available)") +
-            `\n      Sample Occurrences:\n` +
-            (occurrences ? occurrences : "        (No sample occurrences)")
-        );
-    }),
-].join("\n")}
+                "Entity Occurrences:",
+                ...entity.occurrences.map(
+                    (occurrence, idx) =>
+                        `  - Occurrence ${idx + 1}:\n` +
+                        (occurrence.header ? `      Header: ${occurrence.header}\n` : "") +
+                        `      Sentence: ${occurrence.sentence}`,
+                ),
+                "",
+                "Candidate Profiles:",
+                ...enrichedCandidates.map((candidate) => {
+                    const occurrences = candidate.sampleOccurrences
+                        .map(
+                            (occ, occIdx) =>
+                                `      - Occurrence ${occIdx + 1}:\n` +
+                                (occ.header ? `          Header: ${occ.header}\n` : "") +
+                                `          Sentence: ${occ.sentence}`,
+                        )
+                        .join("\n");
+                    return (
+                        `  - Candidate ID: ${candidate.candidateId}\n` +
+                        `      Backlink Count: ${candidate.backlinkCount}\n` +
+                        `      Days Since Last Backlink Edit: ${candidate.daysSinceLastBacklinkEdit}\n` +
+                        `      Body Preview:\n` +
+                        (candidate.bodyPreview
+                            ? candidate.bodyPreview
+                                .split("\n")
+                                .map((line) => `        ${line}`)
+                                .join("\n")
+                            : "        (No preview available)") +
+                        `\n      Sample Occurrences:\n` +
+                        (occurrences ? occurrences : "        (No sample occurrences)")
+                    );
+                }),
+            ].join("\n")}
         `;
 
         console.log(`Select from final candidates AI system prompt for ${entity.canonicalName}:`, systemPrompt);
         console.log(`Select from final candidates AI user prompt for ${entity.canonicalName}:`, userPrompt);
 
         let selectedCandidateId: string | undefined;
+        let aiConfidence: "certain" | "likely" | "uncertain" = "uncertain";
         try {
             const result = await this.utilsEngine.callOpenAIStructured({
                 systemPrompt,
                 userPrompt,
                 model: "gpt-4.1-mini",
                 schemaName: "candidate_selection",
-                schema: z.object({ selectedCandidateId: z.string() }),
+                schema: z.object({
+                    selectedCandidateId: z.string(),
+                    confidence: z.enum(["certain", "likely", "uncertain"]),
+                }),
             });
             selectedCandidateId = result.selectedCandidateId;
+            aiConfidence = result.confidence;
         } catch (e) {
             console.error("Failed to parse AI response in selectFromFinalCandidates:", e);
-            return undefined;
+            return { candidate: undefined, confidence: SelectionConfidence.Unmatched };
         }
 
         if (!selectedCandidateId || selectedCandidateId === "undefined") {
-            return undefined;
+            return { candidate: undefined, confidence: SelectionConfidence.Unmatched };
         }
 
         const selectedCandidate = candidateIdToCandidate.get(selectedCandidateId);
-        return selectedCandidate;
+        const confidence =
+            aiConfidence === "certain" ? SelectionConfidence.Certain
+            : aiConfidence === "likely" ? SelectionConfidence.Likely
+            : SelectionConfidence.Uncertain;
+        return { candidate: selectedCandidate, confidence };
+    }
+
+    /**
+     * For each selection with a chosen file, adds any transcribed display names that aren't
+     * already known (basename, alias, or misspelling) to the file's misspellings frontmatter.
+     * This lets the phonetic matcher find them directly on future runs.
+     */
+    private async updateMisspellingsFromSelections(selections: EntityFileSelection[]): Promise<void> {
+        for (const sel of selections) {
+            if (!sel.selectedFile) continue;
+
+            const file = sel.selectedFile.file;
+            const knownNames = this.getMatchingNamesForFile(sel.selectedFile).map((n) => n.toLowerCase());
+            const basename = file.basename.toLowerCase();
+
+            const newMisspellings = [
+                ...new Set(sel.entityWithFileCandidates.entity.occurrences.map((occ) => occ.displayName)),
+            ].filter((name) => {
+                const lower = name.toLowerCase();
+                return lower !== basename && !knownNames.includes(lower);
+            });
+
+            if (newMisspellings.length === 0) continue;
+
+            await this.app.fileManager.processFrontMatter(file, (fm) => {
+                const existing: string[] = Array.isArray(fm.misspellings) ? fm.misspellings : [];
+                const existingLower = existing.map((s: string) => s.toLowerCase());
+                const toAdd = newMisspellings.filter((n) => !existingLower.includes(n.toLowerCase()));
+                if (toAdd.length > 0) {
+                    fm.misspellings = [...existing, ...toAdd];
+                }
+            });
+        }
     }
 
     // TOOD: Make is parameterizable whether we link all occurrences or only the first occurrence per line for each entity

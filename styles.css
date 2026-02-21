@@ -7,3 +7,94 @@
 .transcription-file-list .setting-item {
     border-top: none;
 }
+
+/* Resolve Entity Modal */
+
+.resolve-entity-modal {
+    .resolve-entity-scroll {
+        max-height: 400px;
+        overflow-y: auto;
+        padding: var(--size-4-2);
+        border: 1px solid var(--background-modifier-border);
+    }
+
+    .resolve-entity-divider {
+        margin: var(--size-4-3) 0 var(--size-4-2);
+        border-top: 1px solid var(--background-modifier-border);
+        padding-top: var(--size-4-2);
+        font-size: var(--font-ui-smaller);
+        color: var(--text-muted);
+        text-align: center;
+    }
+
+    .resolve-entity-block h3 {
+        display: flex;
+        align-items: center;
+        gap: var(--size-4-2);
+    }
+
+    .resolve-entity-badge {
+        font-size: var(--font-ui-smaller);
+        font-weight: normal;
+        padding: 1px 6px;
+        border-radius: var(--radius-s);
+        background: var(--background-modifier-hover);
+        color: var(--text-muted);
+
+        &.resolve-entity-badge--uncertain {
+            background: var(--background-modifier-error);
+            color: var(--text-error);
+        }
+
+        &.resolve-entity-badge--certain {
+            background: var(--background-modifier-success);
+            color: var(--text-success);
+        }
+    }
+
+    .resolve-entity-context {
+        margin-bottom: var(--size-4-2);
+        padding-left: var(--size-4-2);
+        font-style: italic;
+        opacity: 0.8;
+    }
+
+    .radio-group {
+        margin-top: var(--size-4-2);
+        margin-bottom: var(--size-4-2);
+    }
+
+    .resolve-entity-toggle-btn {
+        margin-bottom: var(--size-4-2);
+    }
+
+    .resolve-entity-choose-btn {
+        width: 100%;
+        margin-top: var(--size-4-2);
+    }
+
+    .resolve-entity-new-input {
+        width: 100%;
+        margin-top: var(--size-4-2);
+    }
+
+    .resolve-entity-controls {
+        display: flex;
+        gap: var(--size-4-2);
+        justify-content: flex-end;
+        margin-top: var(--size-4-2);
+    }
+}
+
+.resolve-entity-confirm-modal {
+    .resolve-entity-confirm-buttons {
+        display: flex;
+        gap: var(--size-4-2);
+        justify-content: flex-end;
+        margin-top: var(--size-4-4);
+    }
+}
+
+.is-candidate {
+    font-weight: bold;
+}
