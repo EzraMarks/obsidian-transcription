@@ -1,0 +1,9 @@
+.transcription-file-list {
+    border-top: 1px solid var(--background-modifier-border);
+    padding-top: var(--size-4-3);
+    padding-bottom: var(--size-4-4);
+}
+
+.transcription-file-list .setting-item {
+    border-top: none;
+}

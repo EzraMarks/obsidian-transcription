@@ -3,19 +3,16 @@ import {
     Editor,
     MarkdownView,
     Plugin,
-    PluginManifest,
     TFile,
     Notice,
     Platform,
-    FuzzySuggestModal,
     App,
     Menu,
-    Modal,
 } from "obsidian";
 import { StatusBar } from "./status";
 import { TranscriptionSettings, DEFAULT_SETTINGS, TranscriptionSettingTab } from "./settings";
-import { FileLink } from "./fileLink";
 import { PipelineEngine } from "./pipelineEngine";
+import { TranscriptionModal } from "./transcriptionModal";
 
 export default class Transcription extends Plugin {
     settings: TranscriptionSettings;
@@ -25,7 +22,6 @@ export default class Transcription extends Plugin {
     public static children: Array<ChildProcess> = [];
     public pipelineEngine: PipelineEngine;
 
-    private pendingCommand: { file?: TFile; parentFile: TFile } | null = null;
     private ongoingTranscriptionTasks: Array<{
         task: Promise<void>;
         abortController: AbortController;
@@ -52,11 +48,6 @@ export default class Transcription extends Plugin {
         "mpg",
         "mkv",
     ];
-
-    constructor(app: App, manifest: PluginManifest) {
-        super(app, manifest);
-        // Additional initialization if needed
-    }
 
     public getTranscribeableFiles = async (file: TFile) => {
         // Get all linked files in the markdown file
@@ -92,11 +83,23 @@ export default class Transcription extends Plugin {
         return filesToTranscribe;
     };
 
-    public async transcribeAndWrite(parent_file: TFile, file: TFile, abortController: AbortController | null) {
+    private openTranscriptionModal(
+        files: TFile[],
+        onConfirm: (files: TFile[], pipeline: TFile) => void,
+    ): void {
+        const pipelineFiles = this.pipelineEngine.getPipelineFiles();
+        if (pipelineFiles.length === 0) {
+            new Notice("No pipeline definitions found. Set Pipeline Definitions Folder in settings.");
+            return;
+        }
+        new TranscriptionModal(this.app, files, pipelineFiles, onConfirm).open();
+    }
+
+    public async transcribeAndWrite(parent_file: TFile, file: TFile, pipelineFile: TFile, abortController: AbortController | null) {
         try {
             if (this.settings.debug) console.log("Transcribing " + file.path);
 
-            const transcription = await this.pipelineEngine.runPipeline(parent_file, file);
+            const transcription = await this.pipelineEngine.runPipeline(parent_file, file, pipelineFile);
 
             let fileText = await this.app.vault.read(parent_file);
             const fileLinkString = this.app.metadataCache.fileToLinktext(file, parent_file.path);
@@ -113,23 +116,14 @@ export default class Transcription extends Plugin {
             //check if abortion signal is aborted
 
             if (abortController?.signal?.aborted) {
-                new Notice(`Transcription of ${file.name} cancelled!`, 5 * 1000);
+                new Notice(`Transcription of ${file.name} cancelled!`);
                 return;
             }
 
             await this.app.vault.modify(parent_file, fileText);
         } catch (error) {
-            // First check if 402 is in the error message, if so alert the user that they need to pay
-
-            if (error?.message?.includes("402")) {
-                new Notice(
-                    "You have exceeded the free tier.\nPlease upgrade to a paid plan at swiftink.io/pricing to continue transcribing files.\nThanks for using Swiftink!",
-                    10 * 1000,
-                );
-            } else {
-                if (this.settings.debug) console.log(error);
-                new Notice(`Error transcribing file: ${error}`, 10 * 1000);
-            }
+            if (this.settings.debug) console.log(error);
+            new Notice(`Error transcribing file: ${error}`, 10 * 1000);
         } finally {
             // Clear the AbortController after completion or cancellation
             abortController = null;
@@ -151,14 +145,13 @@ export default class Transcription extends Plugin {
                     item.setTitle("Transcribe")
                         .setIcon("headphones")
                         .onClick(async () => {
-                            // Handle the click event
-                            const abortController = new AbortController();
-                            const task = this.transcribeAndWrite(parentFile, file, abortController);
-                            this.ongoingTranscriptionTasks.push({
-                                task,
-                                abortController,
+                            this.openTranscriptionModal([file], (selectedFiles, pipelineFile) => {
+                                for (const f of selectedFiles) {
+                                    const abortController = new AbortController();
+                                    const task = this.transcribeAndWrite(parentFile, f, pipelineFile, abortController);
+                                    this.ongoingTranscriptionTasks.push({ task, abortController });
+                                }
                             });
-                            await task;
                         });
                 });
             }
@@ -183,50 +176,22 @@ export default class Transcription extends Plugin {
         this.registerEvent(this.app.workspace.on("file-menu", this.onFileMenu.bind(this)));
 
         this.addCommand({
-            id: "obsidian-transcription-add-file",
-            name: "Add File to Transcription",
-            editorCallback: async () => {
-                class FileSelectionModal extends Modal {
-                    onOpen() {
-                        const { contentEl } = this;
-                        contentEl.createEl("h2", { text: "Select files:" });
-                        const input = contentEl.createEl("input", {
-                            type: "file",
-                            attr: { multiple: "" },
-                        });
-                        contentEl.createEl("br");
-                        contentEl.createEl("br");
-                        const button = contentEl.createEl("button", { text: "Add file link" });
-                        button.addEventListener("click", () => {
-                            const fileList = input.files;
-                            if (fileList) {
-                                const files = Array.from(fileList);
-                                let path = "";
-                                for (const file of files) {
-                                    //     console.log(file)
-                                    //@ts-ignore
-                                    path = this.app.vault.getResourcePath(file).toString();
-                                    //console.log(path.toString())
-                                }
-                                // this.app.vault.copy
-
-                                // //@ts-ignore
-                                // let attachementFolder = this.app.vault.config.attachmentFolderPath;
-                                //@ts-ignore
-                                const basePath = this.app.vault.adapter.basePath;
-                                // console.log(attachementFolder);
-                                // console.log(basePath);
-
-                                const fe = new FileLink(path, basePath);
-
-                                files.forEach((file: File) => {
-                                    fe.embedFile(file);
-                                });
-                            }
-                        });
-                    }
+            id: "obsidian-transcription-transcribe-specific-file-in-view",
+            name: "Transcribe",
+            editorCallback: async (editor: Editor, view: MarkdownView) => {
+                if (view.file === null) return;
+                const files = await this.getTranscribeableFiles(view.file);
+                if (files.length === 0) {
+                    new Notice("No transcribable files found in view.");
+                    return;
                 }
-                new FileSelectionModal(this.app).open();
+                this.openTranscriptionModal(files, (selectedFiles, pipelineFile) => {
+                    for (const file of selectedFiles) {
+                        const abortController = new AbortController();
+                        const task = this.transcribeAndWrite(view.file!, file, pipelineFile, abortController);
+                        this.ongoingTranscriptionTasks.push({ task, abortController });
+                    }
+                });
             },
         });
 
@@ -248,99 +213,13 @@ export default class Transcription extends Plugin {
                         // Clear the ongoing transcription tasks after completion or cancellation
                         this.ongoingTranscriptionTasks = [];
                     } else {
-                        new Notice("No ongoing transcription to stop", 5 * 1000);
+                        new Notice("No ongoing transcription to stop");
                     }
                 } catch (error) {
                     console.error("Error stopping transcription:", error);
                 }
             },
         });
-
-        this.addCommand({
-            id: "obsidian-transcription-transcribe-all-in-view",
-            name: "Transcribe all files in view",
-            editorCallback: async (editor: Editor, view: MarkdownView) => {
-                if (view.file === null) return;
-
-                const filesToTranscribe = await this.getTranscribeableFiles(view.file);
-                const fileNames = filesToTranscribe.map((file) => file.name).join(", ");
-                new Notice(`Files Selected: ${fileNames}`, 5 * 1000);
-
-                for (const fileToTranscribe of filesToTranscribe) {
-                    const abortController = new AbortController();
-                    const task = this.transcribeAndWrite(view.file, fileToTranscribe, abortController);
-                    this.ongoingTranscriptionTasks.push({ task, abortController });
-                    await task;
-                }
-            },
-        });
-
-        this.addCommand({
-            id: "obsidian-transcription-transcribe-specific-file-in-view",
-            name: "Transcribe file in view",
-            editorCallback: async (editor: Editor, view: MarkdownView) => {
-                // Get the current filepath
-                if (view.file === null) return;
-
-                const filesToTranscribe = await this.getTranscribeableFiles(view.file);
-
-                // Now that we have all the files to transcribe, we can prompt the user to choose which one they want to transcribe
-
-                class FileSelectionModal extends FuzzySuggestModal<TFile> {
-                    public transcriptionInstance: Transcription; // Reference to Transcription instance
-
-                    constructor(app: App, transcriptionInstance: Transcription) {
-                        super(app);
-                        this.transcriptionInstance = transcriptionInstance;
-                    }
-
-                    getItems(): TFile[] {
-                        return filesToTranscribe;
-                    }
-
-                    getItemText(file: TFile): string {
-                        return file.name;
-                    }
-
-                    async onChooseItem(file: TFile) {
-                        if (view.file === null) return;
-
-                        new Notice(`File Selected: ${file.name}`, 5 * 1000);
-
-                        const abortController = new AbortController();
-                        const task = this.transcriptionInstance.transcribeAndWrite(view.file, file, abortController);
-                        this.transcriptionInstance.ongoingTranscriptionTasks.push({
-                            task,
-                            abortController,
-                        });
-                        await task;
-                    }
-                }
-
-                new FileSelectionModal(this.app, this).open();
-            },
-        });
-
-        // Register a command to transcribe a media file when right-clicking on it
-        // this.registerEvent(
-        // 	// if (!Transcription.transcribeFileExtensions.includes(view.file.extension.toLowerCase())) return;
-        // 	this.app.workspace.on("file-menu", (menu: Menu, file) => {
-        // 		if (file instanceof TFolder) return;
-        // 		// if (file.parent instanceof TFolder) return;
-        // 		if (!(file instanceof TFile)) return;
-        // 		console.log(file)
-        // 		menu.addItem((item) => {
-        // 			item
-        // 				.setTitle("Transcribe File 🖊️")
-        // 				.setIcon("document")
-        // 				.onClick(async () => {
-        // 					if (!Transcription.transcribeFileExtensions.includes(file.extension.toLowerCase())) return;
-        // 					// transcribeAndWrite(file.parent, file)
-        // 					new Notice(file.path);
-        // 				});
-        // 		});
-        // 	})
-        // );
 
         // Kill child processes when the plugin is unloaded
         this.app.workspace.on("quit", () => {
