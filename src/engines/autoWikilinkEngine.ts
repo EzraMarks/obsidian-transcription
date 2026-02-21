@@ -419,7 +419,7 @@ export class AutoWikilinkEngine {
         // If there's only one candidate, check if it's a perfect phonetic match
         if (item.candidates.length === 1) {
             const candidate = item.candidates[0];
-            const isPhoneticMatchValid = await this.isPhoneticMatchValid(candidate.matchedPhoneticEncoding);
+            const isPhoneticMatchValid = await this.isStrongPhoneticMatch(candidate.matchedPhoneticEncoding);
             if (isPhoneticMatchValid) {
                 return { selectedFile: candidate.enrichedFile, confidence: SelectionConfidence.Likely };
             }
@@ -490,7 +490,7 @@ export class AutoWikilinkEngine {
      * Determines if two names are the same, just spelled differently.
      * Uses AI to analyze the names.
      */
-    private async isPhoneticMatchValid(phoneticMatch: PhoneticMatch): Promise<boolean> {
+    private async isStrongPhoneticMatch(phoneticMatch: PhoneticMatch): Promise<boolean> {
         if (phoneticMatch.displayNameDistance === 0 || phoneticMatch.phoneticDistance === 0) {
             return true;
         }
