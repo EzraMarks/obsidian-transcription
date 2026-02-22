@@ -1,0 +1,4 @@
+# Ignore everything in this folder — it contains local test data (audio files,
+# transcripts, pipeline outputs) that should never be committed.
+*
+!.gitignore

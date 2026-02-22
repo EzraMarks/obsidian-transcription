@@ -35,7 +35,7 @@ export async function requestUrl(options: {
         status: response.status,
         text,
         json,
-        headers: Object.fromEntries(response.headers.entries()),
+        headers: Object.fromEntries((response.headers as any).entries()),
         arrayBuffer: () => response.arrayBuffer(),
     };
 }

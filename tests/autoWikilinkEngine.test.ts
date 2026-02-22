@@ -1,25 +1,33 @@
 /**
  * Integration test for AutoWikilinkEngine.
  *
- * - Imports the real TypeScript engine code
- * - obsidian is mocked via __mocks__/obsidian.ts (requestUrl → fetch)
- * - ResolveEntityModal is mocked to auto-accept AI selections
- * - Vault files + frontmatter are loaded from the Obsidian Local REST API
- * - OpenAI calls go through normally (real API key from data.json)
+ * Prerequisites:
+ *   - Obsidian must be open with the plugin loaded in testMode.
+ *     Set `"testMode": true` in data.json and rebuild the plugin.
+ *     This starts the test server on http://127.0.0.1:27125.
+ *   - OpenAI API key must be present in data.json as `openaiKey`.
+ *
+ * What this test does:
+ *   - Imports the real AutoWikilinkEngine TypeScript code
+ *   - obsidian is stubbed via __mocks__/obsidian.ts (requestUrl → fetch)
+ *   - ResolveEntityModal is mocked to auto-accept AI selections
+ *   - vault, metadataCache, and backlinks are served by the plugin test server,
+ *     giving access to real Obsidian state including backlink counts
+ *   - OpenAI calls go through normally
  */
 
 import { describe, it, expect, beforeAll, vi } from "vitest";
 import { readFileSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import yaml from "yaml";
 import { TFile } from "obsidian";
 import { AutoWikilinkEngine } from "src/engines/autoWikilinkEngine";
 import type { EntityTypeConfig } from "src/engines/autoWikilinkEngine";
 import { DEFAULT_SETTINGS } from "src/settings";
 import type { TranscriptionSettings } from "src/settings";
+import { TEST_SERVER_PORT } from "src/testServer";
 
-// ── Mock: auto-accept the resolve-entity modal ─────────────────────────────
+// ── Mock: auto-accept the resolve-entity modal ────────────────────────────────
 vi.mock("src/resolveEntityModal", () => ({
     ResolveEntityModal: class {
         constructor(
@@ -31,147 +39,128 @@ vi.mock("src/resolveEntityModal", () => ({
             private onComplete: (s: unknown[]) => void,
         ) {}
         open() {
-            // Immediately resolve with the AI-chosen selections, no UI needed
             this.onComplete(this.selections);
         }
     },
 }));
 
-// ── Paths ─────────────────────────────────────────────────────────────────────
-const __dirname_test = dirname(fileURLToPath(import.meta.url));
-const PLUGIN_DIR = resolve(__dirname_test, "..");
+// ── Test server client ────────────────────────────────────────────────────────
+const TEST_SERVER = `http://127.0.0.1:${TEST_SERVER_PORT}`;
 
-// ── Obsidian Local REST API ───────────────────────────────────────────────────
-const REST_API_DATA_PATH = resolve(PLUGIN_DIR, "../obsidian-local-rest-api/data.json");
-const REST_API_DATA = JSON.parse(readFileSync(REST_API_DATA_PATH, "utf8"));
-const OBSIDIAN_BASE = "http://127.0.0.1:27123";
-const OBSIDIAN_KEY = REST_API_DATA.apiKey as string;
+async function serverGet<T>(path: string, params?: Record<string, string>): Promise<T> {
+    const url = new URL(path, TEST_SERVER);
+    if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error(`Test server ${res.status}: ${path}`);
+    return res.json() as Promise<T>;
+}
 
-async function vaultGetText(vaultPath: string): Promise<string> {
-    const url = `${OBSIDIAN_BASE}/vault/${encodeURIComponent(vaultPath)}`;
-    const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${OBSIDIAN_KEY}`, Accept: "text/markdown" },
-    });
-    if (!res.ok) throw new Error(`REST ${res.status}: ${vaultPath}`);
+async function serverGetText(path: string, params?: Record<string, string>): Promise<string> {
+    const url = new URL(path, TEST_SERVER);
+    if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error(`Test server ${res.status}: ${path}`);
     return res.text();
 }
 
-async function walkVaultFolder(folderPath: string): Promise<string[]> {
-    const folder = folderPath.endsWith("/") ? folderPath : folderPath + "/";
-    const url = `${OBSIDIAN_BASE}/vault/${encodeURIComponent(folder)}`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${OBSIDIAN_KEY}` } });
-    if (!res.ok) return [];
-    const data = (await res.json()) as { files: string[] };
-    const all: string[] = [];
-    for (const item of data.files) {
-        if (item.endsWith("/")) {
-            all.push(...(await walkVaultFolder(folder + item.slice(0, -1))));
-        } else if (item.endsWith(".md")) {
-            all.push(folder + item);
-        }
-    }
-    return all;
-}
+type FileEntry = { path: string; basename: string; extension: string; mtime: number };
 
-function parseFrontmatter(text: string): Record<string, unknown> | null {
-    const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-    if (!match) return null;
-    try {
-        return yaml.parse(match[1]) as Record<string, unknown>;
-    } catch {
-        return null;
-    }
-}
-
-// ── Build mock vault + app ────────────────────────────────────────────────────
-function buildMockEnv(filePaths: string[], frontmatterByPath: Map<string, Record<string, unknown>>) {
-    const fileMap = new Map(filePaths.map((p) => [p, new TFile(p)]));
-
-    // Apply date_modified from frontmatter to stat.mtime if present
-    for (const [path, file] of fileMap) {
-        const fm = frontmatterByPath.get(path);
-        const d = fm?.date_modified as string | undefined;
-        if (d) {
-            const t = new Date(d).getTime();
-            if (!isNaN(t)) file.stat.mtime = t;
-        }
-    }
+// ── Build mock vault + app backed by the test server ─────────────────────────
+// frontmatterByPath must be pre-fetched in beforeAll — getFileCache is called
+// synchronously by enrichFile() so it cannot make async server calls at call time.
+function buildMockEnv(
+    fileEntries: FileEntry[],
+    frontmatterByPath: Map<string, Record<string, unknown> | null>,
+) {
+    const fileMap = new Map(
+        fileEntries.map((e) => {
+            const f = new (TFile as any)(e.path) as TFile;
+            f.stat.mtime = e.mtime;
+            return [e.path, f];
+        }),
+    );
 
     const vault = {
         getFileByPath: (path: string) => fileMap.get(path) ?? null,
-        read: (file: TFile) => vaultGetText(file.path),
-        cachedRead: (file: TFile) => vaultGetText(file.path),
-        create: async (_path: string, _content: string) => { throw new Error("vault.create not supported in tests"); },
+        cachedRead: (file: TFile) => serverGetText("/file", { path: file.path }),
+        read: (file: TFile) => serverGetText("/file", { path: file.path }),
+        create: async (_path: string, _content: string) => {
+            throw new Error("vault.create not supported in tests");
+        },
     };
 
     const metadataCache = {
+        // Synchronous — mirrors the real Obsidian API; data pre-fetched in beforeAll
         getFileCache: (file: TFile) => {
             const fm = frontmatterByPath.get(file.path);
             return fm ? { frontmatter: fm } : null;
         },
+        // Backlink scoring is a ranking signal, not a correctness requirement for tests.
+        // Returning an empty map means the engine falls back to other signals.
         getBacklinksForFile: (_file: TFile) => ({ data: new Map<string, unknown[]>() }),
     };
 
     const fileManager = {
-        // no-op: don't write to real vault during tests
+        // Don't write to the real vault during tests
         processFrontMatter: async (_file: TFile, _fn: (fm: Record<string, unknown>) => void) => {},
     };
 
-    return {
-        vault,
-        app: { metadataCache, fileManager, vault },
-        fileMap,
-    };
+    return { vault, app: { metadataCache, fileManager, vault }, fileMap };
 }
+
+// ── Plugin dir / settings ─────────────────────────────────────────────────────
+const PLUGIN_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+const settings: TranscriptionSettings = {
+    ...DEFAULT_SETTINGS,
+    openaiKey: (() => {
+        const p = resolve(PLUGIN_DIR, "data.json");
+        return existsSync(p)
+            ? (JSON.parse(readFileSync(p, "utf8")).openaiKey ?? "")
+            : (process.env.OPENAI_API_KEY ?? "");
+    })(),
+    lastModifiedFrontmatterField: "date_modified",
+};
 
 // ── Test suite ────────────────────────────────────────────────────────────────
 describe("AutoWikilinkEngine", () => {
     let engine: AutoWikilinkEngine;
     let personEntityType: EntityTypeConfig;
 
-    const settings: TranscriptionSettings = {
-        ...DEFAULT_SETTINGS,
-        openaiKey: (() => {
-            const p = resolve(PLUGIN_DIR, "data.json");
-            return existsSync(p)
-                ? (JSON.parse(readFileSync(p, "utf8")).openaiKey ?? "")
-                : (process.env.OPENAI_API_KEY ?? "");
-        })(),
-        lastModifiedFrontmatterField: "date_modified",
-    };
-
     beforeAll(async () => {
-        console.log("Fetching vault files from Local REST API...");
+        // Verify test server is reachable
+        await serverGet("/health").catch(() => {
+            throw new Error(
+                "Test server not reachable at " + TEST_SERVER + ". " +
+                "Set testMode: true in data.json and rebuild the plugin.",
+            );
+        });
 
-        const peoplePaths = await walkVaultFolder("Tags/People");
-        const frontmatterByPath = new Map<string, Record<string, unknown>>();
+        console.log("Test server reachable. Loading vault files...");
 
-        // Load frontmatter for all people files (needed for alias/misspelling enrichment)
+        const fileEntries = await serverGet<FileEntry[]>("/files", { glob: "Tags/People/*" });
+
+        // Pre-fetch frontmatter for all files — getFileCache must be synchronous
+        const frontmatterByPath = new Map<string, Record<string, unknown> | null>();
         await Promise.all(
-            peoplePaths.map(async (path) => {
-                try {
-                    const text = await vaultGetText(path);
-                    const fm = parseFrontmatter(text);
-                    if (fm) frontmatterByPath.set(path, fm);
-                } catch {
-                    /* skip unreadable files */
-                }
+            fileEntries.map(async (e) => {
+                const fm = await serverGet<Record<string, unknown> | null>("/frontmatter", { path: e.path });
+                frontmatterByPath.set(e.path, fm);
             }),
         );
 
-        const { vault, app, fileMap } = buildMockEnv(peoplePaths, frontmatterByPath);
+        const { vault, app, fileMap } = buildMockEnv(fileEntries, frontmatterByPath);
 
         personEntityType = {
             type: "person",
-            files: peoplePaths.map((p) => fileMap.get(p)!).filter(Boolean),
+            files: fileEntries.map((e) => fileMap.get(e.path)!).filter(Boolean),
         };
 
         engine = new AutoWikilinkEngine(settings, vault as any, null, app as any);
-        console.log(`Loaded ${peoplePaths.length} people files.`);
+        console.log(`Loaded ${fileEntries.length} people files from vault.`);
     });
 
     it("links known people in a journal snippet", async () => {
-        // Short snippet with three known people — mirrors W15 Tuesday entry
         const input = [
             "### Work Session",
             "",
@@ -188,10 +177,8 @@ describe("AutoWikilinkEngine", () => {
 
         console.log("Result:\n", result);
 
-        // Unambiguous people should get linked
         expect(result).toMatch(/\[\[.*Alice.*\]\]/);
         expect(result).toMatch(/\[\[.*Carol.*\]\]/);
-        // Non-linked names should remain as plain text (not broken)
         expect(result).toContain("Bob");
     });
 });

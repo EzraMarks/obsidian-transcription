@@ -32,6 +32,8 @@ interface TranscriptionSettings {
     openaiKey: string;
     pipelineDefinitionsFolder: string;
     lastModifiedFrontmatterField: string;
+    /** When true, starts a local HTTP test server on plugin load. Set in data.json — not exposed in the UI. */
+    testMode: boolean;
 }
 
 const DEFAULT_SETTINGS: TranscriptionSettings = {
@@ -40,6 +42,7 @@ const DEFAULT_SETTINGS: TranscriptionSettings = {
     openaiKey: "",
     pipelineDefinitionsFolder: "",
     lastModifiedFrontmatterField: "",
+    testMode: false,
 };
 
 class TranscriptionSettingTab extends PluginSettingTab {

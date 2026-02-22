@@ -14,6 +14,7 @@ import { TranscriptionSettings, DEFAULT_SETTINGS, TranscriptionSettingTab } from
 import { PipelineEngine } from "./pipelineEngine";
 import { UserCancelledError } from "./engines/autoWikilinkEngine";
 import { TranscriptionModal } from "./transcriptionModal";
+import { TestServer } from "./testServer";
 
 export default class Transcription extends Plugin {
     settings: TranscriptionSettings;
@@ -27,6 +28,7 @@ export default class Transcription extends Plugin {
         task: Promise<void>;
         abortController: AbortController;
     }> = [];
+    private testServer: TestServer | null = null;
     public static transcribeFileExtensions: string[] = [
         "mp3",
         "wav",
@@ -233,12 +235,18 @@ export default class Transcription extends Plugin {
             });
         });
 
+        if (this.settings.testMode) {
+            this.testServer = new TestServer(this.app);
+            this.testServer.start();
+        }
+
         // This adds a settings tab so the user can configure various aspects of the plugin
         this.addSettingTab(new TranscriptionSettingTab(this.app, this));
     }
 
     onunload() {
         if (this.settings.debug) console.log("Unloading Obsidian Transcription");
+        this.testServer?.stop();
     }
 
     async loadSettings() {
