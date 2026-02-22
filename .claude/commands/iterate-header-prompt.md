@@ -2,7 +2,7 @@ Help the user iterate on the `journal_headers` system prompt in `referenceConfig
 
 ## What this workflow does
 
-`scripts/test-header-prompt.mjs` strips the existing `###`/`####` section headers from a journal entry (one `##`-delimited day in a weekly journal file), then calls the OpenAI API with the current `add_headers` system prompt to regenerate headers. This lets us see what the prompt produces and refine it without re-transcribing audio.
+`scripts/iterate-header-prompt.mjs` strips the existing `###`/`####` section headers from a journal entry (one `##`-delimited day in a weekly journal file), then calls the OpenAI API with the current `add_headers` system prompt to regenerate headers. This lets us see what the prompt produces and refine it without re-transcribing audio.
 
 ## Cost awareness — IMPORTANT
 
@@ -16,13 +16,13 @@ Every run of this script makes a real OpenAI API call that costs money. Before r
 
 ```bash
 # List available entries in a file (no API call)
-node scripts/test-header-prompt.mjs "Journal/2026-W08.md"
+node scripts/iterate-header-prompt.mjs "Journal/2026-W08.md"
 
 # Run on a specific entry (one API call)
-node scripts/test-header-prompt.mjs --entry 2 "Journal/2026-W08.md"
+node scripts/iterate-header-prompt.mjs --entry 2 "Journal/2026-W08.md"
 
 # See stripped paragraph-numbered input without calling the API
-node scripts/test-header-prompt.mjs --strip-only --entry 2 "Journal/2026-W08.md"
+node scripts/iterate-header-prompt.mjs --strip-only --entry 2 "Journal/2026-W08.md"
 ```
 
 Journal files are in the Obsidian vault at `../../../Journal/` relative to the plugin dir (i.e. the vault root is three levels up from the plugin). Recent weekly files are named like `2026-W08.md`.

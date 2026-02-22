@@ -10,7 +10,7 @@ Obsidian plugin that transcribes audio files and post-processes them through a c
 
 ## Iterating on the header prompt
 
-Use `/test-header-prompt` to work on the `journal_headers` system prompt. See `.claude/commands/test-header-prompt.md` for full details.
+Use `/iterate-header-prompt` to work on the `journal_headers` system prompt. See `.claude/commands/iterate-header-prompt.md` for full details.
 
 **Cost warning:** every script run makes a real OpenAI API call. Always confirm with the user before running, and default to one entry at a time.
 
