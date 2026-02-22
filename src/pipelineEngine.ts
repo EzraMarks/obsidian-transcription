@@ -198,7 +198,7 @@ export class PipelineEngine {
             throw new Error("YAML code block not found");
         }
 
-        const yamlContent = match[1].trim();
+        const yamlContent = match[1].trim().replace(/\t/g, "    ");
         const parsed = yaml.parse(yamlContent);
         return parsed;
     }
