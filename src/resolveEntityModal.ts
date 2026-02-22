@@ -8,22 +8,24 @@ import { EnrichedFile, UtilsEngine } from "./engines/utilsEngine";
  */
 
 const CONFIDENCE_ORDER: Record<SelectionConfidence, number> = {
-    [SelectionConfidence.Uncertain]: 0,
-    [SelectionConfidence.Unmatched]: 1,
+    [SelectionConfidence.Unmatched]: 0,
+    [SelectionConfidence.Uncertain]: 1,
     [SelectionConfidence.Likely]: 2,
     [SelectionConfidence.Certain]: 3,
 };
 
-const CONFIDENCE_LABEL: Record<SelectionConfidence, string> = {
-    [SelectionConfidence.Uncertain]: "uncertain",
-    [SelectionConfidence.Unmatched]: "no match",
-    [SelectionConfidence.Likely]: "likely",
-    [SelectionConfidence.Certain]: "certain",
-};
+const SECTION_DEFS: { confidence: SelectionConfidence; label: string }[] = [
+    { confidence: SelectionConfidence.Unmatched, label: "No match" },
+    { confidence: SelectionConfidence.Uncertain, label: "Uncertain" },
+    { confidence: SelectionConfidence.Likely, label: "Likely" },
+    { confidence: SelectionConfidence.Certain, label: "Certain" },
+];
+
 
 export class ResolveEntityModal extends Modal {
     private readonly selections: EntityFileSelection[];
     private readonly allFiles: EnrichedFile[];
+    private readonly fileTypeTags: Map<string, string[]>;
     private readonly utilsEngine: UtilsEngine;
     private readonly onComplete: (selections: EntityFileSelection[] | null) => void;
     private isApplying: boolean = false;
@@ -36,6 +38,7 @@ export class ResolveEntityModal extends Modal {
         app: App,
         selections: EntityFileSelection[],
         allFiles: EnrichedFile[],
+        fileTypeTags: Map<string, string[]>,
         utilsEngine: UtilsEngine,
         onComplete: (s: EntityFileSelection[] | null) => void,
     ) {
@@ -46,6 +49,7 @@ export class ResolveEntityModal extends Modal {
             (a, b) => CONFIDENCE_ORDER[a.confidence] - CONFIDENCE_ORDER[b.confidence],
         );
         this.allFiles = allFiles;
+        this.fileTypeTags = fileTypeTags;
         this.utilsEngine = utilsEngine;
         this.onComplete = onComplete;
         // Pre-populate with AI's selections so confirmed matches pass through untouched
@@ -89,180 +93,161 @@ export class ResolveEntityModal extends Modal {
 
         const scrollContainer = form.createDiv("resolve-entity-scroll");
 
-        let inConfidentSection = false;
-
-        this.selections.forEach((entitySel, idx) => {
-            const isConfident = entitySel.confidence === SelectionConfidence.Likely || entitySel.confidence === SelectionConfidence.Certain;
-
-            // Insert a divider when transitioning from uncertain/none into the AI-confident group
-            if (isConfident && !inConfidentSection) {
-                inConfidentSection = true;
-                const divider = scrollContainer.createDiv("resolve-entity-divider");
-                divider.setText("AI is confident about the following");
-            }
-
-            const container = scrollContainer.createDiv("resolve-entity-block");
-
-            // Header row: name + confidence badge
-            const header = container.createEl("h3");
-            header.appendText(`${entitySel.entityWithFileCandidates.entity.canonicalName} (${idx + 1}/${this.selections.length})`);
-            const typeBadge = header.createEl("span");
-            typeBadge.setText(entitySel.entityWithFileCandidates.entity.type);
-            typeBadge.addClass("resolve-entity-badge");
-
-            const badge = header.createEl("span");
-            badge.setText(CONFIDENCE_LABEL[entitySel.confidence]);
-            badge.addClass("resolve-entity-badge");
-            if (entitySel.confidence === SelectionConfidence.Uncertain) {
-                badge.addClass("resolve-entity-badge--uncertain");
-            } else if (entitySel.confidence === SelectionConfidence.Certain) {
-                badge.addClass("resolve-entity-badge--certain");
-            }
-
-            const contextWrapper = container.createDiv("resolve-entity-context-wrapper");
-            const contextBlock = contextWrapper.createDiv("resolve-entity-context");
-
-            const examples = entitySel.entityWithFileCandidates.entity.occurrences;
-            const maxInitial = 3;
-
-            const renderSentence = (sentence: string) => {
-                const div = contextBlock.createDiv();
-                const parts = sentence.split(/(<entity>|<\/entity>)/);
-                let insideEntity = false;
-                parts.forEach((part) => {
-                    if (part === "<entity>") {
-                        insideEntity = true;
-                    } else if (part === "</entity>") {
-                        insideEntity = false;
-                    } else if (insideEntity) {
-                        const strong = div.createEl("strong");
-                        strong.textContent = part;
-                    } else {
-                        div.appendText(part);
-                    }
-                });
-            };
-
-            examples.slice(0, maxInitial).forEach((occ) => {
-                renderSentence(`…${occ.sentence.trim()}…`);
-            });
-
-            if (examples.length > maxInitial) {
-                const toggleButton = container.createEl("button", { text: "Show more context" });
-                toggleButton.type = "button";
-                toggleButton.addClass("resolve-entity-toggle-btn");
-
-                let expanded = false;
-
-                toggleButton.onclick = (e) => {
-                    e.preventDefault();
-                    expanded = !expanded;
-                    contextBlock.empty();
-
-                    (expanded ? examples : examples.slice(0, maxInitial)).forEach((occ) => {
-                        renderSentence(`…${occ.sentence.trim()}…`);
-                    });
-
-                    toggleButton.textContent = expanded ? "Show less context" : "Show more context";
-                };
-            }
-
-            const radioGroup = container.createDiv("radio-group");
-
-            const hasAiSelection = !!entitySel.selectedFile;
-            const hasCandidates =
-                entitySel.entityWithFileCandidates.candidates &&
-                entitySel.entityWithFileCandidates.candidates.length > 0;
-
-            const shouldPreSelectLink = hasAiSelection || hasCandidates;
-
-            const linkOption = radioGroup.createEl("label");
-            const linkRadio = linkOption.createEl("input", {
-                attr: {
-                    type: "radio",
-                    name: `choice-${idx}`,
-                    value: "link",
-                    ...(shouldPreSelectLink ? { checked: "checked" } : {}),
-                },
-            }) as HTMLInputElement;
-            linkOption.appendText(" Link");
-
-            const newOption = radioGroup.createEl("label");
-            const newRadio = newOption.createEl("input", {
-                attr: { type: "radio", name: `choice-${idx}`, value: "new" },
-            }) as HTMLInputElement;
-            newOption.appendText(" New file");
-
-            const ignoreOption = radioGroup.createEl("label");
-            const ignoreRadio = ignoreOption.createEl("input", {
-                attr: {
-                    type: "radio",
-                    name: `choice-${idx}`,
-                    value: "ignore",
-                    ...(!shouldPreSelectLink ? { checked: "checked" } : {}),
-                },
-            }) as HTMLInputElement;
-            ignoreOption.appendText(" Ignore");
-
-            const chooseButton = container.createEl("button", {
-                text: this.selectedFiles[idx]
-                    ? `Selected: ${this.selectedFiles[idx]?.basename}`
-                    : "Choose File",
-            });
-            chooseButton.type = "button";
-            chooseButton.addClass("resolve-entity-choose-btn");
-
-            const newInput = new TextComponent(container);
-            newInput.inputEl.name = `input-new-${idx}`;
-            newInput.inputEl.placeholder = "New file name...";
-            newInput.setValue(entitySel.entityWithFileCandidates.entity.canonicalName);
-            newInput.inputEl.addClass("resolve-entity-new-input");
-            newInput.inputEl.style.display = "none";
-            this.newFileComponents[idx] = newInput;
-
-            chooseButton.onclick = async () => {
-                const candidateFiles =
-                    entitySel.entityWithFileCandidates.candidates?.map((c) => c.enrichedFile.file) || [];
-                const otherFiles = this.allFiles
-                    .map((f) => f.file)
-                    .filter((file) => !candidateFiles.some((cf) => cf.path === file.path));
-
-                const prioritizedFiles = [...candidateFiles, ...otherFiles];
-
-                const modal = new FileSuggestModal(
-                    this.app,
-                    prioritizedFiles,
-                    this.selectedFiles[idx],
-                    candidateFiles,
-                );
-                modal.onChoose = (file) => {
-                    this.selectedFiles[idx] = file;
-                    chooseButton.setText(`Selected: ${file.basename}`);
-                    linkRadio.checked = true;
-                    updateVisibility();
-                };
-                modal.open();
-            };
-
-            const updateVisibility = () => {
-                if (linkRadio.checked) {
-                    chooseButton.style.display = "block";
-                    newInput.inputEl.style.display = "none";
-                } else if (newRadio.checked) {
-                    chooseButton.style.display = "none";
-                    newInput.inputEl.style.display = "block";
-                } else {
-                    chooseButton.style.display = "none";
-                    newInput.inputEl.style.display = "none";
-                }
-            };
-
-            linkRadio.addEventListener("change", updateVisibility);
-            newRadio.addEventListener("change", updateVisibility);
-            ignoreRadio.addEventListener("change", updateVisibility);
-
-            updateVisibility();
+        // Group selections by confidence
+        const grouped = new Map<SelectionConfidence, { sel: EntityFileSelection; idx: number }[]>();
+        this.selections.forEach((sel, idx) => {
+            const existing = grouped.get(sel.confidence) ?? [];
+            existing.push({ sel, idx });
+            grouped.set(sel.confidence, existing);
         });
+
+        let isFirstSection = true;
+
+        for (const { confidence, label } of SECTION_DEFS) {
+            const group = grouped.get(confidence);
+            if (!group || group.length === 0) continue;
+
+            const sectionHeader = scrollContainer.createDiv("resolve-entity-section-header");
+            sectionHeader.setText(`${label} (${group.length})`);
+            sectionHeader.setAttribute("data-confidence", confidence);
+            if (isFirstSection) sectionHeader.addClass("resolve-entity-section-header--first");
+            isFirstSection = false;
+
+            for (const { sel: entitySel, idx } of group) {
+                const container = scrollContainer.createDiv("resolve-entity-block");
+                container.setAttribute("data-confidence", confidence);
+
+                // Name row: name + type badge + context toggle
+                const nameRow = container.createDiv("resolve-entity-name-row");
+
+                const nameGroup = nameRow.createDiv("resolve-entity-name-group");
+                nameGroup.createEl("span", { text: entitySel.entityWithFileCandidates.entity.canonicalName });
+
+                const typeBadge = nameGroup.createEl("span");
+                typeBadge.setText(entitySel.entityWithFileCandidates.entity.type);
+                typeBadge.addClass("resolve-entity-badge");
+
+                const contextBtn = nameRow.createEl("button", { text: "Context" });
+                contextBtn.type = "button";
+                contextBtn.addClass("resolve-entity-context-btn");
+
+                // Context panel — directly below the name row, above the action controls
+                const contextPanel = container.createDiv("resolve-entity-context-panel");
+                contextPanel.style.display = "none";
+
+                const examples = entitySel.entityWithFileCandidates.entity.occurrences;
+                examples.forEach((occ) => {
+                    const div = contextPanel.createDiv();
+                    const parts = `…${occ.sentence.trim()}…`.split("<entity/>");
+                    parts.forEach((part, i) => {
+                        div.appendText(part);
+                        if (i < parts.length - 1) {
+                            div.createEl("strong", { text: occ.displayName });
+                        }
+                    });
+                });
+
+                contextBtn.onclick = (e) => {
+                    e.preventDefault();
+                    const isHidden = contextPanel.style.display === "none";
+                    contextPanel.style.display = isHidden ? "block" : "none";
+                    contextBtn.setText(isHidden ? "Hide context" : "Context");
+                };
+
+                // Hidden radios — carry the form value; segments drive them
+                const radioContainer = container.createDiv();
+                radioContainer.style.display = "none";
+
+                const hasAiSelection = !!entitySel.selectedFile;
+                const hasCandidates =
+                    entitySel.entityWithFileCandidates.candidates &&
+                    entitySel.entityWithFileCandidates.candidates.length > 0;
+                const shouldPreSelectLink = hasAiSelection || hasCandidates;
+
+                const linkRadio = radioContainer.createEl("input", {
+                    attr: { type: "radio", name: `choice-${idx}`, value: "link",
+                        ...(shouldPreSelectLink ? { checked: "checked" } : {}) },
+                }) as HTMLInputElement;
+                const newRadio = radioContainer.createEl("input", {
+                    attr: { type: "radio", name: `choice-${idx}`, value: "new" },
+                }) as HTMLInputElement;
+                const ignoreRadio = radioContainer.createEl("input", {
+                    attr: { type: "radio", name: `choice-${idx}`, value: "ignore",
+                        ...(!shouldPreSelectLink ? { checked: "checked" } : {}) },
+                }) as HTMLInputElement;
+
+                // Segmented button row
+                const segmentGroup = container.createDiv("resolve-entity-segment-group");
+
+                const linkSegment = segmentGroup.createEl("button", { text: "Link" });
+                linkSegment.type = "button";
+                linkSegment.addClass("resolve-entity-segment");
+
+                const newSegment = segmentGroup.createEl("button", { text: "New file" });
+                newSegment.type = "button";
+                newSegment.addClass("resolve-entity-segment");
+
+                const ignoreSegment = segmentGroup.createEl("button", { text: "Ignore" });
+                ignoreSegment.type = "button";
+                ignoreSegment.addClass("resolve-entity-segment");
+
+                // File detail area — shown below segments when Link or New is active
+                const fileArea = container.createDiv("resolve-entity-file-area");
+
+                const chooseButton = fileArea.createEl("button", {
+                    text: this.selectedFiles[idx]
+                        ? `↗ ${this.selectedFiles[idx]?.basename}`
+                        : "Choose file…",
+                });
+                chooseButton.type = "button";
+                chooseButton.addClass("resolve-entity-choose-btn");
+
+                const newInput = new TextComponent(fileArea);
+                newInput.inputEl.name = `input-new-${idx}`;
+                newInput.inputEl.placeholder = "File name…";
+                newInput.setValue(entitySel.entityWithFileCandidates.entity.canonicalName);
+                newInput.inputEl.addClass("resolve-entity-new-input");
+                this.newFileComponents[idx] = newInput;
+
+                chooseButton.onclick = async () => {
+                    const candidateFiles =
+                        entitySel.entityWithFileCandidates.candidates?.map((c) => c.enrichedFile.file) || [];
+                    const otherFiles = this.allFiles
+                        .map((f) => f.file)
+                        .filter((file) => !candidateFiles.some((cf) => cf.path === file.path));
+
+                    const modal = new FileSuggestModal(
+                        this.app,
+                        [...candidateFiles, ...otherFiles],
+                        this.selectedFiles[idx],
+                        candidateFiles,
+                        this.fileTypeTags,
+                    );
+                    modal.onChoose = (file) => {
+                        this.selectedFiles[idx] = file;
+                        chooseButton.setText(`↗ ${file.basename}`);
+                        linkRadio.checked = true;
+                        updateVisibility();
+                    };
+                    modal.open();
+                };
+
+                const updateVisibility = () => {
+                    linkSegment.toggleClass("is-active", linkRadio.checked);
+                    newSegment.toggleClass("is-active", newRadio.checked);
+                    ignoreSegment.toggleClass("is-active", ignoreRadio.checked);
+                    fileArea.style.display = (linkRadio.checked || newRadio.checked) ? "block" : "none";
+                    chooseButton.style.display = linkRadio.checked ? "block" : "none";
+                    newInput.inputEl.style.display = newRadio.checked ? "block" : "none";
+                };
+
+                linkSegment.onclick = () => { linkRadio.checked = true; updateVisibility(); };
+                newSegment.onclick = () => { newRadio.checked = true; updateVisibility(); };
+                ignoreSegment.onclick = () => { ignoreRadio.checked = true; updateVisibility(); };
+
+                updateVisibility();
+            }
+        }
 
         const controls = contentEl.createDiv("resolve-entity-controls");
 
@@ -346,6 +331,7 @@ class FileSuggestModal extends FuzzySuggestModal<TFile> {
         private files: TFile[],
         private initialSelection: TFile | null,
         candidateFiles: TFile[] = [],
+        private fileTypeTags: Map<string, string[]> = new Map(),
     ) {
         super(app);
         this.candidateFilePaths = new Set(candidateFiles.map((file) => file.path));
@@ -367,11 +353,21 @@ class FileSuggestModal extends FuzzySuggestModal<TFile> {
     }
 
     renderSuggestion(fuzzyMatch: FuzzyMatch<TFile>, el: HTMLElement): void {
-        super.renderSuggestion(fuzzyMatch, el);
+        el.addClass("file-suggest-row");
 
-        const item = fuzzyMatch.item;
-        if (this.candidateFilePaths.has(item.path)) {
+        const textWrapper = el.createDiv("file-suggest-text");
+        super.renderSuggestion(fuzzyMatch, textWrapper);
+
+        if (this.candidateFilePaths.has(fuzzyMatch.item.path)) {
             el.addClass("is-candidate");
+        }
+
+        const types = this.fileTypeTags.get(fuzzyMatch.item.path);
+        if (types && types.length > 0) {
+            const badgeContainer = el.createDiv("file-suggest-badges");
+            for (const type of types) {
+                badgeContainer.createEl("span", { text: type, cls: "resolve-entity-badge" });
+            }
         }
     }
 

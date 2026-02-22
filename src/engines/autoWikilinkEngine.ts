@@ -121,6 +121,16 @@ export class AutoWikilinkEngine {
             [...enrichedFilesByType.values()].flat().map((f) => [f.file.path, f])
         ).values()];
 
+        // Build file-path → entity types map so the modal can show type badges
+        const fileTypeTags = new Map<string, string[]>();
+        for (const [type, files] of enrichedFilesByType) {
+            for (const f of files) {
+                const existing = fileTypeTags.get(f.file.path) ?? [];
+                existing.push(type);
+                fileTypeTags.set(f.file.path, existing);
+            }
+        }
+
         // Build candidates per entity (phonetic or load-all depending on pool size)
         const entitiesWithMeta = await Promise.all(
             extractedEntities.map(async (entity) => {
@@ -160,20 +170,23 @@ export class AutoWikilinkEngine {
             }
         }
 
-        // Build ExtractedEntityWithFileCandidates for the modal (uses original candidate pool for display)
-        // Then select best candidate per entity
+        // Build ExtractedEntityWithFileCandidates for the modal
+        // For load-all entities, use the narrowed candidates so the modal only highlights plausible matches
         const selections: EntityFileSelection[] = await Promise.all(
             entitiesWithMeta.map(async (item) => {
+                const narrowed = item.isLoadAll
+                    ? narrowedByEntity.get(`${item.entity.canonicalName}|||${item.entity.type}`) ?? []
+                    : item.candidates;
+
                 const entityWithFileCandidates: ExtractedEntityWithFileCandidates = {
                     entity: item.entity,
-                    candidates: item.candidates,
+                    candidates: narrowed,
                 };
 
                 let selectedFile: EnrichedFile | undefined;
                 let confidence: SelectionConfidence;
 
                 if (item.isLoadAll) {
-                    const narrowed = narrowedByEntity.get(`${item.entity.canonicalName}|||${item.entity.type}`) ?? [];
                     ({ selectedFile, confidence } = await this.selectFromNarrowed(item.entity, narrowed));
                 } else {
                     ({ selectedFile, confidence } = item.candidates.length
@@ -200,7 +213,7 @@ export class AutoWikilinkEngine {
 
         // Human resolve unresolved
         const finalSelections = await new Promise<EntityFileSelection[] | null>((resolve) => {
-            new ResolveEntityModal(this.app, selections, allEnrichedFiles, this.utilsEngine, resolve).open();
+            new ResolveEntityModal(this.app, selections, allEnrichedFiles, fileTypeTags, this.utilsEngine, resolve).open();
         });
 
         if (finalSelections === null) {
