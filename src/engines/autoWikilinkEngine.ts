@@ -977,10 +977,9 @@ ${[
                 }
 
                 const displayNames = [targetName, ...(sel.selectedFile?.aliases ?? sel?.newFile?.aliases ?? [])];
-                const misspellings = sel.selectedFile?.misspellings ?? sel?.newFile?.misspellings ?? [];
 
                 // Perform spelling correction on the surface text
-                const displayName = this.correctSpelling(sel, surfaceText, displayNames, misspellings);
+                const displayName = this.correctSpelling(surfaceText, displayNames);
 
                 if (isHeader) {
                     // In headers, just use the displayName (no wikilink)
@@ -1008,19 +1007,14 @@ ${[
         return replacedLines.join("\n");
     }
 
-    private correctSpelling(
-        fileSelection: EntityFileSelection,
-        rawDisplayName: string,
-        displayNames: string[],
-        misspellings: string[],
-    ): string {
-        const isMisspelled = misspellings.includes(rawDisplayName) || fileSelection.wasManuallyResolved;
-
+    private correctSpelling(rawDisplayName: string, displayNames: string[]): string {
+        // Soundex is intentionally skipped here — it's too strict for single-name phonetic variants
+        // (e.g. "Cole" vs "Nicole", soundex C400 vs N240). Metaphone distance ≤ 2 is the sole gate.
         const bestMatch = this.findBestPhoneticEncodingMatch(
             getPhoneticEncoding(rawDisplayName),
             displayNames.map((str) => getPhoneticEncoding(str)),
-            isMisspelled ? Number.MAX_SAFE_INTEGER : 2,
-            isMisspelled ? Number.MAX_SAFE_INTEGER : 0,
+            2,
+            Number.MAX_SAFE_INTEGER,
         );
 
         return bestMatch?.candidateEncoding?.displayName || rawDisplayName;
