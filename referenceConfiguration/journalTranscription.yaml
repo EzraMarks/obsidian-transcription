@@ -13,17 +13,15 @@ steps:
       prompt:
           - role: system
             content: |
-                You are proofreading a journal transcript from an audio-to-text tool (like Whisper).
+                You are proofreading a journal transcript from an audio-to-text model (GPT-4o).
 
                 Your instructions:
 
-                - **Keep all my original words and tone.**  
-                - **Remove only filler words** like "um," "uh," "like" (when unnecessary), "you know," etc.  
+                - **Keep all my original words and tone.**
+                - **Remove only filler words** like "um," "uh," "like" (when unnecessary), "you know," etc.
                 - **Fix formatting**:
-                  - Correct dates and times ("april fifth" → "April 5th", "10 50 am" → "10:50 a.m.").
                   - Break text into frequent, natural-sized paragraphs, following topic shifts. Avoid very long paragraphs (no more than 200 words).
-                  - Turn spoken lists into markdown lists or numbered lists.
-                  - Add simple formatting (bold for headings, italics for emphasis) if clearly intended.
+                  - Italicize titles of books, films, albums, and other works.
                 - **Do not** reword, paraphrase, or remove ANY content aside from disfluencies and changing punctuation.
 
           - role: user
@@ -34,25 +32,23 @@ steps:
       description: Add markdown headers to organize the text at a glance
       model:
           name: gpt-4.1
-          temperature: 0
+          temperature: 0.3
       prompt:
           - role: system
             content: |
                 You organize free-form journal entries by inserting Markdown headers.
 
-                Header titles should be short and descriptive, summarizing what follows; the goal is to spark the memory of the reader by uniquely identifying the event. They should include a salient detail and/or word from the text.
+                Header titles should be concise noun phrases (1–4 words). For routine or recurring activities, a simple category name suffices (e.g., "Work", "Dinner with Amber"). For distinct or notable events, name the thing directly and concretely rather than abstractly. The goal is a header you'd immediately recognize when skimming weeks later.
 
                 1. Read the entire journal text.
-                2. Identify high-level events or themes (e.g., “Work”, “Birthday party”).
-                  - For each, insert a **level-3 header** (`###`) with a concise noun-phrase title (3-6 words).
-                3. Within any big event that covers multiple distinct phases or subtopics, group all its paragraphs under its `###` header, and insert **level-4 headers** (`####`) for each phase.
+                2. Add a **level-3 header** (`###`) for each primary segment of the day — a distinct change in scene, activity, or company. Include these even for routine activities; they serve as organizational anchors.
+                3. Within a complex event, add **level-4 sub-headers** (`####`) for phases or sub-events that seem genuinely significant — the kind of thing worth remembering in retrospect. Don't fragment a simple event just to label every detail or person mentioned.
                 4. Preserve all original paragraphs and their wording.
-                5. Do *not* include a top-level header for the current date.
+                5. Do *not* include a top-level markdown header for the current date. If there is a short preamble mentioning today's date, include that content (unedited) before the first header.
                 6. Output **only** the resulting Markdown.
           - role: user
             content: |
-                Please add Markdown headings as described above to the following transcript.
-                Return **only** the augmented transcript—no commentary or code-fences.
+                Please add Markdown headings as described above to the following transcript. Do not omit any content from the original transcript, and return only the augmented transcript.
 
                 {{ journal_cleanup }}
 
@@ -62,6 +58,13 @@ steps:
           - type: person
             files:
                 - Tags/People/*
+                - "*"
+          - type: movie
+            files:
+                - Catalogs/Movies/**
+          - type: music
+            files:
+                - Catalogs/Music/**
       input: "{{ journal_headers }}"
 
     - name: final
