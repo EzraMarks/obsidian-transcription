@@ -153,6 +153,9 @@ export class PipelineEngine {
             }
 
             case "auto_wikilink": {
+                if (!step.entity_types) {
+                    throw new Error("auto_wikilink step is missing required field 'entity_types'.");
+                }
                 const entityTypes = step.entity_types.map((et) => ({
                     type: et.type,
                     files: et.files.flatMap((glob) => getFilesFromGlob(this.vault, glob)),
