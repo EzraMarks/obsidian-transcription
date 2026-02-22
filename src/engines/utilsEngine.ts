@@ -26,15 +26,19 @@ export class UtilsEngine {
 
     /**
      * For a given sourcePath, returns the timestamp (ms since epoch)
-     * of `date_modified` frontmatter if present, otherwise file.stat.mtime.
+     * using the configured lastModifiedFrontmatterField if present, otherwise file.stat.mtime.
      */
     getSourceFileTime(sourcePath: string): number {
         const sourceFile = this.getFileOrThrow(sourcePath);
-        const frontmatter = this.app.metadataCache.getFileCache(sourceFile)?.frontmatter;
-        const dateModified = frontmatter?.["date_modified"];
-        const mtime = dateModified ? new Date(dateModified).getTime() : sourceFile.stat.mtime;
-
-        return mtime;
+        const field = this.settings.lastModifiedFrontmatterField;
+        if (field) {
+            const value = this.app.metadataCache.getFileCache(sourceFile)?.frontmatter?.[field];
+            if (value) {
+                const parsed = new Date(value).getTime();
+                if (!isNaN(parsed)) return parsed;
+            }
+        }
+        return sourceFile.stat.mtime;
     }
 
     getFileOrThrow(sourcePath: string): TFile {

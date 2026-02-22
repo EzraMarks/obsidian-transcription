@@ -751,18 +751,33 @@ export class AutoWikilinkEngine {
         entity: ExtractedEntity,
         candidates: FileCandidate[],
     ): Promise<{ candidate: FileCandidate | undefined; confidence: SelectionConfidence }> {
-        // Hard cap to prevent context blowout; keep most recently modified
+        // Pre-fetch backlinks for all candidates once — reused for both sorting and enrichment
+        const backlinksByPath = new Map(
+            candidates.map((c) => [
+                c.enrichedFile.file.path,
+                this.backlinkEngine.getBacklinksForFile(c.enrichedFile.file),
+            ]),
+        );
+
+        // Hard cap to prevent context blowout; keep most recently active (file mtime or most recent backlink edit)
         if (candidates.length > AutoWikilinkEngine.MAX_FINAL_CANDIDATES) {
+            const getMostRecentActivity = (candidate: FileCandidate): number => {
+                const fileMtime = candidate.enrichedFile.file.stat.mtime;
+                const backlinks = backlinksByPath.get(candidate.enrichedFile.file.path) ?? [];
+                const mostRecentBacklink = backlinks.reduce(
+                    (max, [sourcePath]) => Math.max(max, this.utilsEngine.getSourceFileTime(sourcePath)),
+                    0,
+                );
+                return Math.max(fileMtime, mostRecentBacklink);
+            };
             candidates = [...candidates]
-                .sort((a, b) => this.getLastModifiedDate(b.enrichedFile.file).localeCompare(
-                    this.getLastModifiedDate(a.enrichedFile.file),
-                ))
+                .sort((a, b) => getMostRecentActivity(b) - getMostRecentActivity(a))
                 .slice(0, AutoWikilinkEngine.MAX_FINAL_CANDIDATES);
         }
 
         const enrichedCandidates = await Promise.all(
             candidates.map(async (fileCandidate, idx) => {
-                const backlinks = this.backlinkEngine.getBacklinksForFile(fileCandidate.enrichedFile.file);
+                const backlinks = backlinksByPath.get(fileCandidate.enrichedFile.file.path)!;
                 const backlinkCount = this.backlinkEngine.calculateBacklinkCount(backlinks);
                 const daysSinceLastBacklinkEdit = this.backlinkEngine.calculateDaysSinceLastBacklinkEdit(backlinks);
                 const dateLastModified = this.getLastModifiedDate(fileCandidate.enrichedFile.file);
