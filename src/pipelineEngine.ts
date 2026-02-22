@@ -158,6 +158,7 @@ export class PipelineEngine {
                 }
                 const entityTypes = step.entity_types.map((et) => ({
                     type: et.type,
+                    description: et.description,
                     files: et.files.flatMap((glob) => getFilesFromGlob(this.vault, glob)),
                 }));
                 const input = he.decode(nunjucks.renderString(step.input, context));

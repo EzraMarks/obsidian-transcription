@@ -65,6 +65,14 @@ steps:
           - type: music
             files:
                 - Catalogs/Music/**
+          - type: places
+            files:
+                - Catalogs/Places/**
+          - type: projects
+            description: "Concrete personal projects — things like woodworking, 3D printing, gift planning, or personal software projects I'm building. Not professional work tools, software I'm using, or named instances of things like terminals or AI agents."
+            files:
+                - Projects/2026/**
+                - Internal Projects/**
       input: "{{ journal_headers }}"
 
     - name: final

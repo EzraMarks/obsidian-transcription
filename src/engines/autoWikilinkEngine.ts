@@ -12,6 +12,7 @@ import { ResolveEntityModal } from "src/resolveEntityModal";
 /** An entity type with its associated candidate files */
 export interface EntityTypeConfig {
     type: string; // e.g. "person"
+    description?: string; // optional clarification of what counts as this type
     files: TFile[]; // e.g. all person files in the vault
 }
 
@@ -103,7 +104,7 @@ export class AutoWikilinkEngine {
         const typeNames = entityTypes.map((et) => et.type);
 
         // Tag all entity types in one LLM call
-        const taggedText = await this.generateTaggedText(input, typeNames);
+        const taggedText = await this.generateTaggedText(input, entityTypes);
 
         console.log("Tagged text", taggedText);
 
@@ -243,12 +244,19 @@ export class AutoWikilinkEngine {
     /**
      * Tag entities in the text with <entity id="Canonical Name" type="...">...</entity>
      */
-    async generateTaggedText(input: string, entityTypes: string[]): Promise<string> {
-        const typeList = entityTypes.map((t) => `"${t}"`).join(", ");
+    async generateTaggedText(input: string, entityTypes: EntityTypeConfig[]): Promise<string> {
+        const typeNames = entityTypes.map((et) => et.type);
+        const typeList = typeNames.map((t) => `"${t}"`).join(", ");
+        const typeDescriptions = entityTypes
+            .map((et) => `- "${et.type}"${et.description ? `: ${et.description}` : ""}`)
+            .join("\n            ");
 
         const systemPrompt = `
             You are an entity-tagging assistant with strong coreference resolution.
-            Your task is to insert <entity> tags around every mention of the following entity types in markdown text: ${typeList}.
+            Your task is to insert <entity> tags around every mention of the following entity types in markdown text.
+
+            Entity types:
+            ${typeDescriptions}
 
             Instructions:
             1. Identify every reference to any of these entity types.

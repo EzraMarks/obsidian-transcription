@@ -47,6 +47,7 @@ export interface TemplatingPipelineStep extends BasePipelineStep {
 
 export interface AutoWikilinkEntityType {
     type: string;
+    description?: string;
     files: string[];
 }
 
