@@ -8,7 +8,8 @@
         "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
         "lint": "eslint ./src --fix && prettier --write ./src",
         "version": "node version-bump.mjs && git add manifest.json versions.json",
-        "get_types": "npx openapi-typescript https://api.swiftink.io/openapi.json --output src/types/swiftink.d.ts"
+        "get_types": "npx openapi-typescript https://api.swiftink.io/openapi.json --output src/types/swiftink.d.ts",
+        "test-header-prompt": "node scripts/test-header-prompt.mjs"
     },
     "keywords": [
         "audio transcription",
