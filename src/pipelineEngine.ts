@@ -180,22 +180,25 @@ export class PipelineEngine {
                     ),
                 });
 
-                // Append the paragraph-numbering convention that matches our insertion logic.
-                // Users shouldn't need to explain this in their system_prompt.
+                // Pre-number each paragraph so the model can read indices directly
+                // rather than counting blank lines itself (which it does unreliably).
+                const paragraphs = text.replace(/\r\n/g, "\n").split(/\n\n/);
+                const numberedText = paragraphs.map((p, i) => `[${i}] ${p}`).join("\n\n");
+
                 const fullSystemPrompt =
                     systemPrompt.trimEnd() +
-                    "\n\nParagraphs are numbered from 0; a paragraph is any block of text separated by a blank line.";
+                    "\n\nEach paragraph in the text is prefixed with its index in brackets, e.g. [0], [1]. Use these indices for before_paragraph.";
 
                 const result = await this.utilsEngine.callOpenAIStructured({
                     systemPrompt: fullSystemPrompt,
-                    userPrompt: text,
+                    userPrompt: numberedText,
                     model: step.model.name,
                     temperature: step.model.temperature,
                     schemaName: "add_headers",
                     schema,
                 });
 
-                return this.insertHeaders(text, result.headers);
+                return this.insertHeaders(paragraphs, result.headers);
             }
 
             default:
@@ -204,10 +207,10 @@ export class PipelineEngine {
     }
 
     private insertHeaders(
-        text: string,
+        paragraphs: string[],
         headers: { level: number; title: string; before_paragraph: number }[],
     ): string {
-        const paragraphs = text.replace(/\r\n/g, "\n").split(/\n\n/);
+        paragraphs = [...paragraphs];
 
         // Insert in reverse paragraph order so earlier insertions don't shift later indices.
         // Break ties by level ascending so ### always precedes #### at the same position.
