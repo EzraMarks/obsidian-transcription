@@ -12,7 +12,8 @@ export type PipelineStep =
     | LlmPipelineStep
     | HumanPipelineStep
     | TemplatingPipelineStep
-    | AutoWikilinkPipelineStep;
+    | AutoWikilinkPipelineStep
+    | AddHeadersPipelineStep;
 
 export interface AudioTranscriptionPipelineStep extends BasePipelineStep {
     type: "audio_transcription";
@@ -49,6 +50,13 @@ export interface AutoWikilinkEntityType {
     type: string;
     description?: string;
     files: string[];
+}
+
+export interface AddHeadersPipelineStep extends BasePipelineStep {
+    type: "add_headers";
+    input: string;
+    model: LlmModel;
+    system_prompt: string;
 }
 
 export interface AutoWikilinkPipelineStep extends BasePipelineStep {

@@ -1,6 +1,7 @@
 import he from "he";
 import { Vault, App, TFile, Notice } from "obsidian";
 import nunjucks from "nunjucks";
+import { z } from "zod";
 import { AutoWikilinkEngine } from "./engines/autoWikilinkEngine";
 import { AudioTranscriptionEngine } from "./engines/audioTranscriptionEngine";
 import { PipelineStep, PipelineInputSource, PipelineDefinition, BasePipelineStep } from "./pipelineDefinition";
@@ -165,9 +166,60 @@ export class PipelineEngine {
                 return await this.autoWikilinkEngine.applyAutoWikilink(input, entityTypes);
             }
 
+            case "add_headers": {
+                const text = this.renderTemplatedString(step.input, context);
+                const systemPrompt = this.renderTemplatedString(step.system_prompt, context);
+
+                const schema = z.object({
+                    headers: z.array(
+                        z.object({
+                            level: z.number().int(),
+                            title: z.string(),
+                            before_paragraph: z.number().int().nonnegative(),
+                        }),
+                    ),
+                });
+
+                // Append the paragraph-numbering convention that matches our insertion logic.
+                // Users shouldn't need to explain this in their system_prompt.
+                const fullSystemPrompt =
+                    systemPrompt.trimEnd() +
+                    "\n\nParagraphs are numbered from 0; a paragraph is any block of text separated by a blank line.";
+
+                const result = await this.utilsEngine.callOpenAIStructured({
+                    systemPrompt: fullSystemPrompt,
+                    userPrompt: text,
+                    model: step.model.name,
+                    temperature: step.model.temperature,
+                    schemaName: "add_headers",
+                    schema,
+                });
+
+                return this.insertHeaders(text, result.headers);
+            }
+
             default:
                 throw new Error(`Unknown step type: ${(step as BasePipelineStep).type}`);
         }
+    }
+
+    private insertHeaders(
+        text: string,
+        headers: { level: number; title: string; before_paragraph: number }[],
+    ): string {
+        const paragraphs = text.replace(/\r\n/g, "\n").split(/\n\n/);
+
+        // Insert in reverse paragraph order so earlier insertions don't shift later indices.
+        // Break ties by level ascending so ### always precedes #### at the same position.
+        const sorted = [...headers].sort(
+            (a, b) => b.before_paragraph - a.before_paragraph || a.level - b.level,
+        );
+        for (const header of sorted) {
+            const idx = Math.max(0, Math.min(header.before_paragraph, paragraphs.length));
+            paragraphs.splice(idx, 0, "#".repeat(header.level) + " " + header.title);
+        }
+
+        return paragraphs.join("\n\n");
     }
 
     private renderTemplatedString(templatedString: string, context: object) {
