@@ -58,8 +58,10 @@ steps:
 
     - name: make_links
       type: auto_wikilink
-      files:
-          - Tags/People/*
+      entity_types:
+          - type: person
+            files:
+                - Tags/People/*
       input: "{{ journal_headers }}"
 
     - name: final

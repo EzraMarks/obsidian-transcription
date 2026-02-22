@@ -31,6 +31,7 @@ interface TranscriptionSettings {
     verbosity: number;
     openaiKey: string;
     pipelineDefinitionsFolder: string;
+    lastModifiedFrontmatterField: string;
 }
 
 const DEFAULT_SETTINGS: TranscriptionSettings = {
@@ -38,6 +39,7 @@ const DEFAULT_SETTINGS: TranscriptionSettings = {
     verbosity: 1,
     openaiKey: "",
     pipelineDefinitionsFolder: "",
+    lastModifiedFrontmatterField: "",
 };
 
 class TranscriptionSettingTab extends PluginSettingTab {
@@ -108,6 +110,21 @@ class TranscriptionSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 });
             });
+
+        new Setting(containerEl)
+            .setName("Last modified frontmatter field")
+            .setDesc(
+                "Frontmatter field name used as 'date last modified' when matching entities (e.g. 'date_modified'). Falls back to the file's actual modification time if not set or if the value is not a valid date.",
+            )
+            .addText((text) =>
+                text
+                    .setPlaceholder("e.g. date_modified")
+                    .setValue(this.plugin.settings.lastModifiedFrontmatterField)
+                    .onChange(async (value) => {
+                        this.plugin.settings.lastModifiedFrontmatterField = value.trim();
+                        await this.plugin.saveSettings();
+                    }),
+            );
 
         new Setting(containerEl).setName("Advanced Settings").setHeading();
 

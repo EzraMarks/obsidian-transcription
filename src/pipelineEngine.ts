@@ -153,9 +153,12 @@ export class PipelineEngine {
             }
 
             case "auto_wikilink": {
-                const files = step.files.flatMap((fileGlob) => getFilesFromGlob(this.vault, fileGlob));
+                const entityTypes = step.entity_types.map((et) => ({
+                    type: et.type,
+                    files: et.files.flatMap((glob) => getFilesFromGlob(this.vault, glob)),
+                }));
                 const input = he.decode(nunjucks.renderString(step.input, context));
-                return await this.autoWikilinkEngine.applyAutoWikilink(input, files);
+                return await this.autoWikilinkEngine.applyAutoWikilink(input, entityTypes);
             }
 
             default:

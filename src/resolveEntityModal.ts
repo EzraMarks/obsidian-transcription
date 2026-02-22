@@ -106,6 +106,9 @@ export class ResolveEntityModal extends Modal {
             // Header row: name + confidence badge
             const header = container.createEl("h3");
             header.appendText(`${entitySel.entityWithFileCandidates.entity.canonicalName} (${idx + 1}/${this.selections.length})`);
+            const typeBadge = header.createEl("span");
+            typeBadge.setText(entitySel.entityWithFileCandidates.entity.type);
+            typeBadge.addClass("resolve-entity-badge");
 
             const badge = header.createEl("span");
             badge.setText(CONFIDENCE_LABEL[entitySel.confidence]);
