@@ -24,15 +24,17 @@
  * API key: reads OPENAI_API_KEY env var, or falls back to data.json in the plugin dir.
  */
 
-import { readFileSync, existsSync } from "fs";
-import { resolve, dirname } from "path";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { resolve, dirname, basename } from "path";
 import { fileURLToPath } from "url";
 import yaml from "yaml";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_DIR = resolve(__dirname, "..");
+const VAULT_DIR = resolve(PLUGIN_DIR, "../../..");
 const DEFAULT_YAML_CONFIG = resolve(PLUGIN_DIR, "referenceConfiguration/journalTranscription.yaml");
 const DATA_JSON = resolve(PLUGIN_DIR, "data.json");
+const DEFAULT_OUTPUT_DIR = resolve(VAULT_DIR, "_header-prompt-tests");
 
 // ── ANSI colors ──────────────────────────────────────────────────────────────
 const R = "\x1b[0m";
@@ -47,7 +49,8 @@ const MAGENTA = "\x1b[35m";
 function parseArgs(argv) {
     const opts = {
         configPath: null, promptFile: null, model: null, temp: null,
-        entry: null, all: false, stripOnly: false, showPrompt: false, files: [],
+        entry: null, all: false, stripOnly: false, showPrompt: false,
+        save: false, outputDir: DEFAULT_OUTPUT_DIR, files: [],
     };
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
@@ -59,6 +62,8 @@ function parseArgs(argv) {
         else if (a === "--all" || a === "-a") opts.all = true;
         else if (a === "--strip-only" || a === "-s") opts.stripOnly = true;
         else if (a === "--show-prompt") opts.showPrompt = true;
+        else if (a === "--save") opts.save = true;
+        else if (a === "--output-dir" || a === "-o") { opts.save = true; opts.outputDir = argv[++i]; }
         else if (a === "--help" || a === "-h") { printHelp(); process.exit(0); }
         else if (!a.startsWith("-")) opts.files.push(a);
     }
@@ -166,7 +171,14 @@ function insertHeaders(text, headers) {
 }
 
 // ── OpenAI call ───────────────────────────────────────────────────────────────
-async function callOpenAIStructured({ apiKey, systemPrompt, userPrompt, model, temperature }) {
+async function callOpenAIStructured({ apiKey, systemPrompt, paragraphs, model, temperature }) {
+    // Mirror pipelineEngine.ts: pre-number paragraphs so the model reads indices
+    // directly rather than counting blank lines (which it does unreliably).
+    const numberedText = paragraphs.map((p, i) => `[${i}] ${p}`).join("\n\n");
+    const fullSystemPrompt =
+        systemPrompt.trimEnd() +
+        "\n\nEach paragraph in the text is prefixed with its index in brackets, e.g. [0], [1]. Use these indices for before_paragraph.";
+
     const schema = {
         type: "object",
         properties: {
@@ -195,8 +207,8 @@ async function callOpenAIStructured({ apiKey, systemPrompt, userPrompt, model, t
             model,
             temperature,
             messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: userPrompt },
+                { role: "system", content: fullSystemPrompt },
+                { role: "user", content: numberedText },
             ],
             response_format: { type: "json_schema", json_schema: { name: "add_headers", strict: true, schema } },
         }),
@@ -219,7 +231,7 @@ function truncate(s, max = 80) {
     return oneLine.length > max ? oneLine.slice(0, max - 1) + "…" : oneLine;
 }
 
-async function processEntry({ entry, entryNum, totalEntries, apiKey, systemPrompt, model, temperature, stripOnly }) {
+async function processEntry({ entry, entryNum, totalEntries, apiKey, systemPrompt, model, temperature, stripOnly, save, outputDir, sourceFile }) {
     const stripped = stripSectionStructure(entry.content);
     const paragraphs = stripped.split(/\n\n/);
 
@@ -243,7 +255,7 @@ async function processEntry({ entry, entryNum, totalEntries, apiKey, systemPromp
 
     let result;
     try {
-        result = await callOpenAIStructured({ apiKey, systemPrompt, userPrompt: stripped, model, temperature });
+        result = await callOpenAIStructured({ apiKey, systemPrompt, paragraphs, model, temperature });
     } catch (err) {
         console.error(`${BOLD}API error:${R} ${err.message}`);
         return;
@@ -256,6 +268,20 @@ async function processEntry({ entry, entryNum, totalEntries, apiKey, systemPromp
     }
 
     const output = insertHeaders(stripped, result.headers);
+
+    // Optionally save to output dir
+    if (save) {
+        mkdirSync(outputDir, { recursive: true });
+        const now = new Date();
+        const ts = now.toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+        const slug = entry.title.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "");
+        const srcStem = basename(sourceFile, ".md");
+        const outFile = resolve(outputDir, `${ts}_${srcStem}_${slug}.md`);
+        writeFileSync(outFile, `## ${entry.title}\n\n${output}\n`, "utf8");
+        console.log(`\n${GREEN}Saved → ${outFile}${R}`);
+    }
+
+    // Print to terminal
     console.log(`\n${DIM}${hr()}${R}`);
     console.log(`${BOLD}Output:${R}\n`);
     for (const p of output.split(/\n\n/)) {
@@ -347,7 +373,7 @@ async function main() {
         }
 
         for (const { entry, entryNum } of toProcess) {
-            await processEntry({ entry, entryNum, totalEntries: entries.length, apiKey, systemPrompt, model, temperature, stripOnly: opts.stripOnly });
+            await processEntry({ entry, entryNum, totalEntries: entries.length, apiKey, systemPrompt, model, temperature, stripOnly: opts.stripOnly, save: opts.save, outputDir: opts.outputDir, sourceFile: filePath });
         }
     }
 }

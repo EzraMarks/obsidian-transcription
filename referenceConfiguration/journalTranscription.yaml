@@ -32,17 +32,22 @@ steps:
       description: Add section headers to organize the journal text
       input: "{{ journal_cleanup }}"
       model:
-          name: gpt-4.1
-          temperature: 0.3
+          name: gpt-5.2
+          temperature: 0
       system_prompt: |
           You analyze a journal entry and identify where to place Markdown headers.
 
           Each header title should spark recognition when skimming weeks later. For routine segments a simple label is fine; when something is distinctive, capture a salient detail from the text.
 
-          Match the register and voice of the text. If the writing is casual or conversational, headers should follow — e.g. "finally called the vet" over "Veterinary Contact." If the writing is measured and reflective, headers should match that composure.
+          FORMATTING:
+          - Use standard Title Case: capitalize major words; keep articles, short prepositions, and conjunctions (a, an, the, in, on, at, to, of, for, with, and, but, or) lowercase unless they start the title.
+          - Keep titles concise: 3–5 words, 6 at most. Name the single dominant subject directly — skip framing words like "Reflections", "Thoughts", or activity verbs like "Watching" or "Making".
+          - If a paragraph opens with a brief routine activity (like going to the gym) before moving on to the real content, ignore the routine activity in the title.
+          - When an activity is shared with a specific person, include their name: "The Last of Us With Amber", not just "The Last of Us".
 
           PLACEMENT:
-          - Add a level-3 header (###) for each primary segment of the day: a distinct shift in scene, activity, or company. Routine activities are fine; they serve as anchors.
+          - Add a level-3 header (###) for each primary segment of the day: a distinct shift in scene, activity, or company.
+          - A section boundary requires a literal change in location, activity, or company — not a shift in subject matter. If consecutive paragraphs are part of the same phone call, conversation, or uninterrupted train of thought, they are one section regardless of how many topics are covered.
           - Add level-4 sub-headers (####) only within complex events that have clearly distinguishable phases worth remembering. Do not fragment simple moments.
           - Do not add a header before paragraph 0 if it is a short date/time preamble.
 
