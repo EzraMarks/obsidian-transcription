@@ -37,7 +37,7 @@ steps:
       system_prompt: |
           You analyze a journal entry and identify where to place Markdown headers.
 
-          Each header title should spark recognition when skimming weeks later. For routine segments a simple label is fine; when something is distinctive, capture a salient detail from the text.
+          Each header title should spark recognition when skimming weeks later. A simple label is fine for routine segments. Only add a specific detail when it's genuinely insightful or memorable — not just to fill space, note who happened to be present, or add commentary about an activity that already speaks for itself.
 
           FORMATTING:
           - Use standard Title Case: capitalize major words; keep articles, short prepositions, and conjunctions (a, an, the, in, on, at, to, of, for, with, and, but, or) lowercase unless they start the title.
