@@ -15,7 +15,7 @@ export function getFilesFromGlob(vault: Vault, pattern: string): TFile[] {
         for (const child of fld.children) {
             if (child instanceof TFolder) {
                 walk(child);
-            } else if (child instanceof TFile && minimatch(child.path, pattern)) {
+            } else if (child instanceof TFile && child.extension === "md" && minimatch(child.path, pattern)) {
                 matches.push(child);
             }
         }
