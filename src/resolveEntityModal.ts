@@ -1,5 +1,6 @@
 import { App, Modal, Notice, TFile, FuzzySuggestModal, TextComponent, FuzzyMatch } from "obsidian";
-import { SelectionConfidence, type EntityFileSelection } from "./engines/autoWikilinkEngine";
+import { SelectionConfidence } from "./engines/selectionConfidence";
+import type { EntityFileSelection } from "./engines/autoWikilinkEngine";
 import { EnrichedFile, UtilsEngine } from "./engines/utilsEngine";
 
 /**

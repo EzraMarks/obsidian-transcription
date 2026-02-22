@@ -8,6 +8,7 @@ import { BacklinkEngine, BacklinkEntry, BacklinksArrayDict } from "./backlinkEng
 import { EnrichedFile, UtilsEngine } from "./utilsEngine";
 import { extractSentence, findNearestHeading, getPhoneticEncoding, PhoneticEncoding, PhoneticMatch } from "../utils";
 import { ResolveEntityModal } from "src/resolveEntityModal";
+import { SelectionConfidence } from "./selectionConfidence";
 
 /** An entity type with its associated candidate files */
 export interface EntityTypeConfig {
@@ -52,17 +53,6 @@ export interface ExtractedEntityWithFileCandidates {
     candidates: FileCandidate[];
 }
 
-/** How confident the AI is in its file selection for an entity. */
-export enum SelectionConfidence {
-    /** The AI picked from multiple surviving candidates — a judgment call that may be wrong. */
-    Uncertain = "uncertain",
-    /** No matching file was found — the entity may be new or too ambiguous to resolve. */
-    Unmatched = "unmatched",
-    /** A single candidate survived all filtering — the AI is reasonably confident in this match. */
-    Likely = "likely",
-    /** The AI is highly confident — strong recent context and clear alignment with the candidate. */
-    Certain = "certain",
-}
 
 /** The extracted entity being matched and the chosen file */
 export interface EntityFileSelection {
