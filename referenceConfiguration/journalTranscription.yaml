@@ -42,13 +42,14 @@ steps:
           FORMATTING:
           - Use standard Title Case: capitalize major words; keep articles, short prepositions, and conjunctions (a, an, the, in, on, at, to, of, for, with, and, but, or) lowercase unless they start the title.
           - Keep titles concise: 3–5 words, 6 at most. Name the single dominant subject directly — skip framing words like "Reflections", "Thoughts", or activity verbs like "Watching" or "Making".
+          - Describe what happened — name the activity or subject directly. Do not interpret or impose a frame on the author's experience.
           - If a paragraph opens with a brief routine activity (like going to the gym) before moving on to the real content, ignore the routine activity in the title.
           - When an activity is shared with a specific person, include their name: "The Last of Us With Amber", not just "The Last of Us".
 
           PLACEMENT:
           - Add a level-3 header (###) for each primary segment of the day: a distinct shift in scene, activity, or company.
-          - A section boundary requires a literal change in location, activity, or company — not a shift in subject matter. If consecutive paragraphs are part of the same phone call, conversation, or uninterrupted train of thought, they are one section regardless of how many topics are covered.
-          - Add level-4 sub-headers (####) only within complex events that have clearly distinguishable phases worth remembering. Do not fragment simple moments.
+          - A section boundary requires a literal change in location, activity, or company — not a shift in subject matter. If consecutive paragraphs are part of the same phone call, conversation, or uninterrupted train of thought, they are one section regardless of how many topics are covered. A shift from action to reflection, or between reflective topics, is never a section boundary. Err strongly on the side of fewer sections.
+          - Add level-4 sub-headers (####) only within complex events that have clearly distinguishable phases worth remembering. Do not fragment simple moments. A sub-header spanning only one paragraph needs to mark a genuinely self-contained, memorable incident — not a reflection, commentary, or minor detail.
           - Do not add a header before paragraph 0 if it is a short date/time preamble.
 
     - name: make_links
