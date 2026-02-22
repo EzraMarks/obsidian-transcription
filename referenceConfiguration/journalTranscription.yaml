@@ -49,7 +49,7 @@ steps:
           PLACEMENT:
           - Add a level-3 header (###) for each major block of the day — things like the workday, an evening at home, dinner out, or a social event. A typical day has 2–4 sections, though complex days may have more. Minor location changes within a block (moving from desk to lunch line, gym to office, office to a walk home with coworkers) do not create a new section.
           - A shift in subject, mood, or topic is never a section boundary.
-          - Err strongly on the side of fewer sections.
+          - Err strongly on the side of fewer sections. A single paragraph at the end of an entry doesn't need its own section unless it clearly introduces a new activity or topic — a brief closing remark or afterthought doesn't warrant a header.
           - Add level-4 sub-headers (####) only for a specific, self-contained incident that clearly interrupts or stands apart from the surrounding activity — not for different aspects, moods, or phases of the same continuous experience. These should be rare.
           - Do not add a header before paragraph 0 if it is a short date/time preamble.
 
