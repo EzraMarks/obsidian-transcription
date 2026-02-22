@@ -5,12 +5,14 @@
  * the real plugin state without mocking these APIs.
  *
  * Endpoint summary:
- *   GET  /health                   — liveness check
- *   GET  /files?glob=<pattern>     — list vault files matching a glob
- *   GET  /file?path=<path>         — read file content
- *   GET  /frontmatter?path=<path>  — get parsed frontmatter
- *   GET  /backlinks?path=<path>    — get backlinks from the metadata cache
- *   POST /frontmatter?path=<path>  — merge JSON body into file frontmatter
+ *   GET  /health                             — liveness check
+ *   GET  /files?glob=<pattern>               — list markdown files matching a glob
+ *   GET  /files?glob=<pattern>&all=1         — list all files (any extension) matching a glob
+ *   GET  /file?path=<path>                   — read text file content
+ *   GET  /file-binary?path=<path>            — read binary file content
+ *   GET  /frontmatter?path=<path>            — get parsed frontmatter
+ *   GET  /backlinks?path=<path>              — get backlinks from the metadata cache
+ *   POST /frontmatter?path=<path>            — merge JSON body into file frontmatter
  */
 
 import * as http from "http";
@@ -61,7 +63,8 @@ export class TestServer {
 
         if (pathname === "/files") {
             const glob = url.searchParams.get("glob") ?? "*";
-            const files = getFilesFromGlob(this.app.vault, glob);
+            const all = url.searchParams.get("all") === "1";
+            const files = getFilesFromGlob(this.app.vault, glob, all ? undefined : ["md"]);
             res.writeHead(200);
             res.end(
                 JSON.stringify(
@@ -73,6 +76,26 @@ export class TestServer {
                     })),
                 ),
             );
+            return;
+        }
+
+        if (pathname === "/file-binary") {
+            const filePath = url.searchParams.get("path");
+            if (!filePath) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: "Missing path param" }));
+                return;
+            }
+            const file = this.app.vault.getFileByPath(filePath);
+            if (!file) {
+                res.writeHead(404);
+                res.end(JSON.stringify({ error: "File not found" }));
+                return;
+            }
+            const content = await this.app.vault.readBinary(file);
+            res.setHeader("Content-Type", "application/octet-stream");
+            res.writeHead(200);
+            res.end(Buffer.from(content));
             return;
         }
 
