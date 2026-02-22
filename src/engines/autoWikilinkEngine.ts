@@ -737,10 +737,21 @@ export class AutoWikilinkEngine {
      * Given an entity and a list of candidate files, uses AI to select the best matching candidate file,
      * based on the context of where the candidate has been mentioned before and the metrics of the candidate files.
      */
+    private static readonly MAX_FINAL_CANDIDATES = 10;
+
     private async selectFromFinalCandidates(
         entity: ExtractedEntity,
         candidates: FileCandidate[],
     ): Promise<{ candidate: FileCandidate | undefined; confidence: SelectionConfidence }> {
+        // Hard cap to prevent context blowout; keep most recently modified
+        if (candidates.length > AutoWikilinkEngine.MAX_FINAL_CANDIDATES) {
+            candidates = [...candidates]
+                .sort((a, b) => this.getLastModifiedDate(b.enrichedFile.file).localeCompare(
+                    this.getLastModifiedDate(a.enrichedFile.file),
+                ))
+                .slice(0, AutoWikilinkEngine.MAX_FINAL_CANDIDATES);
+        }
+
         const enrichedCandidates = await Promise.all(
             candidates.map(async (fileCandidate, idx) => {
                 const backlinks = this.backlinkEngine.getBacklinksForFile(fileCandidate.enrichedFile.file);
@@ -765,8 +776,7 @@ export class AutoWikilinkEngine {
             }),
         );
 
-        // Build a map from candidateId to enrichedCandidate for easy lookup. We do this rather than exposing file paths to the AI,
-        // because otherwise the AI may inadvertently try to match files based on name spelling rather than context, which is not desired.
+        // Build a map from candidateId to enrichedCandidate for easy lookup
         const candidateIdToCandidate = new Map<string, any>();
         for (const candidate of enrichedCandidates) {
             candidateIdToCandidate.set(candidate.candidateId, candidate);
@@ -800,6 +810,7 @@ export class AutoWikilinkEngine {
         `.trim();
 
         const userPrompt = `
+Entity name as it appears in the text: ${entity.canonicalName}
 Sample context of the entity to match (shown as <entity/>):
 ${[
                 "Entity Occurrences:",
@@ -820,8 +831,10 @@ ${[
                                 `          Sentence: ${occ.sentence}`,
                         )
                         .join("\n");
+                    const knownNames = this.getMatchingNamesForFile(candidate.enrichedFile);
                     return (
                         `  - Candidate ID: ${candidate.candidateId}\n` +
+                        `      Known Names: ${knownNames.join(", ")}\n` +
                         `      Date Last Modified: ${candidate.dateLastModified}\n` +
                         `      Backlink Count: ${candidate.backlinkCount}\n` +
                         `      Days Since Last Backlink Edit: ${candidate.daysSinceLastBacklinkEdit}\n` +
@@ -888,7 +901,7 @@ ${[
             const basename = file.basename.toLowerCase();
 
             const newMisspellings = [
-                ...new Set(sel.entityWithFileCandidates.entity.occurrences.map((occ) => occ.displayName)),
+                sel.entityWithFileCandidates.entity.canonicalName,
             ].filter((name) => {
                 const lower = name.toLowerCase();
                 return lower !== basename && !knownNames.includes(lower);

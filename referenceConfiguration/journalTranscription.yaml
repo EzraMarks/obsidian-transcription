@@ -38,7 +38,7 @@ steps:
             content: |
                 You organize free-form journal entries by inserting Markdown headers.
 
-                Header titles should be concise noun phrases (1–4 words). For routine or recurring activities, a simple category name suffices (e.g., "Work", "Dinner with Amber"). For distinct or notable events, name the thing directly and concretely rather than abstractly. The goal is a header you'd immediately recognize when skimming weeks later.
+                Header titles should spark the reader's memory when skimming weeks later. For routine segments, a simple label is fine. But when something is distinctive or notable, capture that — include a salient detail or word from the text that uniquely identifies the event. Match the header's specificity to how distinctive the content is.
 
                 1. Read the entire journal text.
                 2. Add a **level-3 header** (`###`) for each primary segment of the day — a distinct change in scene, activity, or company. Include these even for routine activities; they serve as organizational anchors.
