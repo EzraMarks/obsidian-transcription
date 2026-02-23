@@ -1,4 +1,4 @@
-import { TFile, Vault, App, ItemView } from "obsidian";
+import { TFile, Vault, App } from "obsidian";
 import { TranscriptionSettings } from "src/settings";
 import { StatusBar } from "../status";
 import levenshtein from "js-levenshtein";
@@ -10,10 +10,13 @@ import { extractSentence, findNearestHeading, getPhoneticEncoding, PhoneticEncod
 import { ResolveEntityModal } from "src/resolveEntityModal";
 import { SelectionConfidence } from "./selectionConfidence";
 
+import { MatchStrategy } from "src/pipelineDefinition";
+
 /** An entity type with its associated candidate files */
 export interface EntityTypeConfig {
     type: string; // e.g. "person"
     description?: string; // optional clarification of what counts as this type
+    matchStrategy: MatchStrategy; // "phonetic" for names, "semantic" for descriptive titles
     files: TFile[]; // e.g. all person files in the vault
 }
 
@@ -41,7 +44,7 @@ export interface NewFile {
 /** A candidate match between an ExtractedEntity and a file */
 export interface FileCandidate {
     enrichedFile: EnrichedFile;
-    /** Present for phonetic candidates; absent for load-all candidates */
+    /** Present for phonetic candidates; absent for semantic candidates */
     matchedPhoneticEncoding?: PhoneticMatch;
 }
 
@@ -83,16 +86,14 @@ export class AutoWikilinkEngine {
         this.backlinkEngine = new BacklinkEngine(settings, vault, app, this.utilsEngine);
     }
 
-    /**
-     * Files with this many or fewer candidates skip phonetic pre-filtering and use all files directly.
-     * Batched name-narrowing is used instead.
-     */
-    private static readonly LOAD_ALL_THRESHOLD = 150;
+    /** Max candidates per LLM name-narrowing batch for semantic types. */
+    private static readonly SEMANTIC_BATCH_SIZE = 300;
+
+    /** Max number of LLM narrowing batches. Pools larger than BATCH_SIZE * MAX_BATCHES are trimmed by recency. */
+    private static readonly SEMANTIC_MAX_BATCHES = 2;
 
     /** Main entry point: applies auto-wikilinks to the given text */
     async applyAutoWikilink(input: string, entityTypes: EntityTypeConfig[]): Promise<string> {
-        const typeNames = entityTypes.map((et) => et.type);
-
         // Tag all entity types in one LLM call
         const taggedText = await this.generateTaggedText(input, entityTypes);
 
@@ -122,37 +123,45 @@ export class AutoWikilinkEngine {
             }
         }
 
-        // Build candidates per entity (phonetic or load-all depending on pool size)
+        // Build a lookup from type name to its config (for matchStrategy access)
+        const typeConfigByName = new Map(entityTypes.map((et) => [et.type, et]));
+
+        // Build candidates per entity using the appropriate strategy:
+        //
+        // PHONETIC: Phonetic pre-filter → final selection LLM
+        // SEMANTIC: Load all → batched LLM name-narrowing (chunked if large) → final selection LLM
+
         const entitiesWithMeta = await Promise.all(
             extractedEntities.map(async (entity) => {
                 const pool = enrichedFilesByType.get(entity.type) ?? [];
-                const isLoadAll = pool.length <= AutoWikilinkEngine.LOAD_ALL_THRESHOLD;
+                const config = typeConfigByName.get(entity.type);
+                const isSemantic = config?.matchStrategy === "semantic";
 
-                const candidates: FileCandidate[] = isLoadAll
+                const candidates: FileCandidate[] = isSemantic
                     ? pool.map((f) => ({ enrichedFile: f }))
                     : await this.getFileCandidates(entity, pool);
 
-                return { entity, candidates, isLoadAll };
+                return { entity, candidates, needsLlmNarrowing: isSemantic };
             }),
         );
 
         console.log("File candidates", entitiesWithMeta);
 
-        // Batch-narrow load-all entities (they share a candidate pool per type, so one LLM call per type)
+        // LLM-narrow entities that need it (batched per type since they share a candidate pool)
         const narrowedByEntity = new Map<string, FileCandidate[]>();
 
-        const loadAllByType = new Map<string, typeof entitiesWithMeta>();
+        const toNarrowByType = new Map<string, typeof entitiesWithMeta>();
         for (const item of entitiesWithMeta) {
-            if (item.isLoadAll && item.candidates.length > 0) {
-                const group = loadAllByType.get(item.entity.type) ?? [];
+            if (item.needsLlmNarrowing && item.candidates.length > 0) {
+                const group = toNarrowByType.get(item.entity.type) ?? [];
                 group.push(item);
-                loadAllByType.set(item.entity.type, group);
+                toNarrowByType.set(item.entity.type, group);
             }
         }
 
-        for (const [type, items] of loadAllByType) {
+        for (const [type, items] of toNarrowByType) {
             const sharedCandidates = enrichedFilesByType.get(type)!.map((f) => ({ enrichedFile: f }));
-            const batchResult = await this.narrowDownCandidatesByNameBatched(
+            const batchResult = await this.narrowDownCandidatesBatched(
                 items.map((i) => i.entity),
                 sharedCandidates,
             );
@@ -161,29 +170,19 @@ export class AutoWikilinkEngine {
             }
         }
 
-        // Build ExtractedEntityWithFileCandidates for the modal
-        // For load-all entities, use the narrowed candidates so the modal only highlights plausible matches
+        // Build selections: use narrowed candidates if LLM-narrowed, otherwise use phonetic pre-filtered candidates directly
         const selections: EntityFileSelection[] = await Promise.all(
             entitiesWithMeta.map(async (item) => {
-                const narrowed = item.isLoadAll
+                const candidates = item.needsLlmNarrowing
                     ? narrowedByEntity.get(`${item.entity.canonicalName}|||${item.entity.type}`) ?? []
                     : item.candidates;
 
                 const entityWithFileCandidates: ExtractedEntityWithFileCandidates = {
                     entity: item.entity,
-                    candidates: narrowed,
+                    candidates,
                 };
 
-                let selectedFile: EnrichedFile | undefined;
-                let confidence: SelectionConfidence;
-
-                if (item.isLoadAll) {
-                    ({ selectedFile, confidence } = await this.selectFromNarrowed(item.entity, narrowed));
-                } else {
-                    ({ selectedFile, confidence } = item.candidates.length
-                        ? await this.selectBestCandidate(entityWithFileCandidates)
-                        : { selectedFile: undefined, confidence: SelectionConfidence.Unmatched });
-                }
+                const { selectedFile, confidence } = await this.selectFromNarrowed(item.entity, candidates);
 
                 return { entityWithFileCandidates, selectedFile, confidence };
             }),
@@ -480,151 +479,73 @@ export class AutoWikilinkEngine {
         return preview;
     }
 
-    /** AI selects best candidate or undefined */
-    private async selectBestCandidate(
-        item: ExtractedEntityWithFileCandidates,
-    ): Promise<{ selectedFile: EnrichedFile | undefined; confidence: SelectionConfidence }> {
-        if (item.candidates.length === 0) {
-            return { selectedFile: undefined, confidence: SelectionConfidence.Unmatched };
-        }
-
-        console.log(`Pre-narrowed candidates for ${item.entity.canonicalName}:`, item.candidates);
-
-        const narrowedCandidates = await this.narrowDownCandidatesByName(item.entity, item.candidates);
-
-        if (narrowedCandidates.length === 0) {
-            return { selectedFile: undefined, confidence: SelectionConfidence.Unmatched };
-        }
-
-        if (narrowedCandidates.length === 1) {
-            return { selectedFile: narrowedCandidates[0].enrichedFile, confidence: SelectionConfidence.Likely };
-        }
-
-        console.log(`Narrowed candidates for ${item.entity.canonicalName}:`, narrowedCandidates);
-
-        const { candidate: selectedCandidate, confidence } = await this.selectFromFinalCandidates(item.entity, narrowedCandidates);
-        console.log("Select best candidate AI response", selectedCandidate);
-
-        return {
-            selectedFile: selectedCandidate?.enrichedFile,
-            confidence: selectedCandidate ? confidence : SelectionConfidence.Unmatched,
-        };
-    }
-
 
     /**
-     * Uses AI to narrow down the list of candidate files for an entity based on display name similarity and full name logic.
-     *
-     * The AI is provided with all display names for the entity (e.g., ["John Jacobson", "John"]) and the display names for each candidate.
-     * It is instructed to return only those candidates whose names could plausibly refer to the same person as the entity.
-     *
-     * If the entity's full name (e.g., "John Jacobson") is present, the AI should strongly prefer exact or near-exact matches on the full name,
-     * and should exclude candidates whose full names are clearly different, even if there is overlap on first names (e.g., ["John Smith", "John"]).
-     * For example, if the entity is ["John Jacobson", "John"] and the candidates are
-     *   [
-     *     ["John Jones", "John"], // filePath john_jones.md
-     *     ["John Smith", "John"], // filePath john_smith.md
-     *     ["John Smieth", "John"] // filePath john_smeith.md
-     *   ],
-     * the AI should recognize that ["John Smith", "John"] and ["John Smieth", "John"] are not matches for ["John Jacobson", "John"]
-     * and return an empty list, despite the shared first name.
-     *
-     * If the entity and a candidate share only a first name, but the full names are clearly different, the candidate should be excluded.
-     * Only candidates whose full names are plausible alternate spellings or variants of the entity's full name should be retained.
-     *
-     * However, if the entity is referenced only by a first name (e.g., ["John"]), then all candidates with that first name,
-     * regardless of their last names, should be included, since there is not enough information to disambiguate.
-     *
-     * Example 1:
-     *   Target: ["John Jacobson", "John"]
-     *   Candidates:
-     *     [
-     *       ["John Jones", "John"], // filePath john_jones.md
-     *       ["John Smith", "John"], // filePath john_smith.md
-     *       ["John Smieth", "John"], // filePath john_smeith.md
-     *     ]
-     *   Result: []
-     *
-     * Example 2:
-     *   Target: ["Aidan Clarage", "Aidan"]
-     *   Candidates:
-     *     [
-     *       ["Aiden Clarage", "Aiden"] (filePath aiden_clarage.md),
-     *       ["Aidan Cassel-Mace", "Aidan"] (filePath aidan_cassel_mace.md)
-     *     ]
-     *   Result: ["aiden_clarage.md"]
-     *
-     * Example 3:
-     *   Target: ["John"]
-     *   Candidates:
-     *     [
-     *       ["John Jones"], // filePath john_jones.md
-     *       ["John Smith"], // filePath john_smith.md
-     *       ["John Smieth"], // filePath john_smeith.md
-     *     ]
-     *   Result: ["john_jones.md", "john_smith.md", "john_smeith.md"]
-     *
-     * @param entity The extracted entity with its display names.
-     * @param candidates The list of FileCandidate objects to filter.
-     * @returns A Promise resolving to the narrowed list of FileCandidate objects.
+     * Batched LLM name-narrowing: given multiple entities sharing a candidate pool,
+     * narrows each entity's candidates via LLM. If the pool exceeds
+     * SEMANTIC_BATCH_SIZE * SEMANTIC_MAX_BATCHES, it is trimmed to the most recently
+     * modified files. Remaining candidates are chunked into batches.
      */
-    private async narrowDownCandidatesByName(
-        entity: ExtractedEntity,
+    private async narrowDownCandidatesBatched(
+        entities: ExtractedEntity[],
         candidates: FileCandidate[],
-    ): Promise<FileCandidate[]> {
-        const entityNames = entity.occurrences.map((it) => it.displayName);
-        const candidateInfos = candidates.map((it) => ({
-            displayNames: this.getMatchingNamesForFile(it.enrichedFile),
-            filePath: it.enrichedFile.file.path,
-        }));
-
-        // Compose a prompt for the LLM
-        const prompt = `
-            You are an expert at matching entities by name, even with alternate spellings.
-            Given a target entity (with one or more display names) and a list of candidates (with their display names and file paths), return the list of file paths that are plausible matches for the target, based only on the names.
-
-            Rules:
-            - If the target has a full or complete name, only include candidates whose name is a plausible alternate spelling or variant of the target's name.
-            - If the target is referenced only by a short or partial name, include all candidates that could match.
-            - Do not include candidates whose names are clearly different, even if they share some words.
-
-            Target display names: ${JSON.stringify(entityNames)}
-
-            Candidates:
-            ${candidateInfos.map((it) => `  - [${it.displayNames.join(", ")}] (${it.filePath})`).join("\n")}
-
-            Return a JSON object in this format:
-            {
-                "matchingFilePaths": string[]  // List of file paths that are plausible matches
-            }
-
-            Remember, even the most strange alternative spellings and misspellings are valid matches.
-        `.trim();
-
-        let filePaths: string[] = [];
-        try {
-            const result = await this.utilsEngine.callOpenAIStructured({
-                userPrompt: prompt,
-                model: "gpt-4.1-nano",
-                schemaName: "candidate_filter",
-                schema: z.object({ matchingFilePaths: z.array(z.string()) }),
-            });
-            filePaths = result.matchingFilePaths;
-        } catch (e) {
-            console.error("Failed to parse AI response in narrowDownCandidatesByName:", e);
-            return candidates;
+    ): Promise<Map<string, FileCandidate[]>> {
+        if (entities.length === 0 || candidates.length === 0) {
+            return new Map(entities.map((e) => [e.canonicalName, []]));
         }
 
-        // Filter the candidates to only those whose file path is in the AI's list
-        const filtered = candidates.filter((c) => filePaths.includes(c.enrichedFile.file.path));
-        return filtered;
+        const maxCandidates = AutoWikilinkEngine.SEMANTIC_BATCH_SIZE * AutoWikilinkEngine.SEMANTIC_MAX_BATCHES;
+
+        // Trim to most recently modified files if pool is too large
+        if (candidates.length > maxCandidates) {
+            console.log(`Semantic pool has ${candidates.length} candidates — trimming to ${maxCandidates} most recent`);
+            candidates = [...candidates]
+                .sort((a, b) =>
+                    this.getLastModifiedDate(b.enrichedFile.file).localeCompare(this.getLastModifiedDate(a.enrichedFile.file)),
+                )
+                .slice(0, maxCandidates);
+        }
+
+        // If the candidate pool fits in one batch, send it directly
+        if (candidates.length <= AutoWikilinkEngine.SEMANTIC_BATCH_SIZE) {
+            return this.narrowDownCandidatesSingleBatch(entities, candidates);
+        }
+
+        // Chunk candidates into batches and union the results across batches
+        const chunks: FileCandidate[][] = [];
+        for (let i = 0; i < candidates.length; i += AutoWikilinkEngine.SEMANTIC_BATCH_SIZE) {
+            chunks.push(candidates.slice(i, i + AutoWikilinkEngine.SEMANTIC_BATCH_SIZE));
+        }
+
+        console.log(`Narrowing ${candidates.length} candidates in ${chunks.length} batches for ${entities.length} entities`);
+
+        const batchResults = await Promise.all(
+            chunks.map((chunk) => this.narrowDownCandidatesSingleBatch(entities, chunk)),
+        );
+
+        // Union: for each entity, combine matches from all batches (deduplicated by file path)
+        const resultMap = new Map<string, FileCandidate[]>();
+        for (const entity of entities) {
+            const seen = new Set<string>();
+            const combined: FileCandidate[] = [];
+            for (const batchResult of batchResults) {
+                const matches = batchResult.get(entity.canonicalName) ?? [];
+                for (const match of matches) {
+                    if (!seen.has(match.enrichedFile.file.path)) {
+                        seen.add(match.enrichedFile.file.path);
+                        combined.push(match);
+                    }
+                }
+            }
+            resultMap.set(entity.canonicalName, combined);
+        }
+        return resultMap;
     }
 
     /**
-     * Batched version of narrowDownCandidatesByName for use when multiple entities share the same
-     * candidate pool (load-all types). Sends the candidate list once instead of once per entity.
+     * Single-batch LLM name-narrowing. Sends all entities and candidates in one LLM call.
      */
-    private async narrowDownCandidatesByNameBatched(
+    private async narrowDownCandidatesSingleBatch(
         entities: ExtractedEntity[],
         candidates: FileCandidate[],
     ): Promise<Map<string, FileCandidate[]>> {
@@ -642,15 +563,23 @@ export class AutoWikilinkEngine {
             filePath: c.enrichedFile.file.path,
         }));
 
+        const entityType = entities[0]?.type ?? "unknown";
+
         const prompt = `
-            You are an expert at matching entities by name, even with alternate spellings.
+            You are an expert at matching entities by name.
             Given a list of target entities and a shared list of candidate files, for each entity return
-            the file paths that are plausible name matches.
+            the file paths that are plausible matches.
+
+            Entity type: ${entityType}
+
+            The targets come from transcribed speech.
+            For **proper nouns** (people, places, bands, etc.), names may be phonetically garbled — match alternate spellings, misspellings, and phonetic variants (e.g. "Shawn" ↔ "Sean").
+            For **descriptive names** (projects, topics, events, etc.), the speaker may paraphrase or use a casual description instead of the exact title — match by meaning and overlapping concepts (e.g. "Bedroom Shelf Project" ↔ "Building Shelves for Sleep Room").
 
             Rules:
-            - If an entity has a full name, only include candidates whose name is a plausible alternate spelling.
+            - If an entity has a full name, only include candidates whose name is a plausible variant — whether by spelling, phonetics, or meaning depending on entity type.
             - If an entity is only referenced by a short or partial name, include all candidates that could match.
-            - Do not include candidates whose names are clearly different, even if they share some words.
+            - Do not include candidates whose names are clearly different in both sound and meaning.
 
             Entities:
             ${entityInfos.map((e) => `  - canonicalName: ${JSON.stringify(e.canonicalName)}, displayNames: ${JSON.stringify(e.displayNames)}`).join("\n")}
@@ -676,7 +605,7 @@ export class AutoWikilinkEngine {
             });
             results = result.results;
         } catch (e) {
-            console.error("Failed to parse AI response in narrowDownCandidatesByNameBatched:", e);
+            console.error("Failed to parse AI response in narrowDownCandidatesSingleBatch:", e);
             // Fall back: each entity gets all candidates
             return new Map(entities.map((e) => [e.canonicalName, candidates]));
         }
@@ -693,7 +622,7 @@ export class AutoWikilinkEngine {
         return resultMap;
     }
 
-    /** Selects the best candidate from an already-narrowed list (used for load-all entities). */
+    /** Selects the best candidate from an already-narrowed candidate list. */
     private async selectFromNarrowed(
         entity: ExtractedEntity,
         narrowed: FileCandidate[],
@@ -795,75 +724,80 @@ export class AutoWikilinkEngine {
             candidateIdToCandidate.set(candidate.candidateId, candidate);
         }
 
-        const isPerson = entity.type === "person";
         const systemPrompt = `
-            You help match mentions of entities in text to their corresponding profile.
-            Entity type: ${entity.type}
+You are matching a named entity from a speech transcription to an existing profile in a personal knowledge base.
 
-            Given:
-             - An entity (referred to as <entity/>) and the context in which they appear in the current text
-             - A list of candidate profiles, each with their content and previous mentions
-            Your task is to determine if this entity matches any existing profile, or if it is something new.
+## Key Context
+- The input text is transcribed speech.
+- Entity type: ${entity.type}
+- For **proper nouns** (people, places, bands, etc.), transcribed names may be phonetic approximations (e.g. "Rhea" → "Riya", "Shawn" → "Sean"). Candidates have been pre-filtered by phonetic similarity.
+- For **descriptive names** (projects, topics, events, etc.), the speaker may paraphrase or use a casual description instead of the exact title (e.g. "Bedroom Shelf Project" → "Building Shelves for Sleep Room"). Candidates have been pre-filtered by semantic similarity.
 
-            Use these metrics to guide your decision:
-            ${isPerson
-                ? "- days since last backlink edit — THIS IS THE MOST IMPORTANT SIGNAL for people. Strongly prefer candidates mentioned very recently (low values). A candidate mentioned 3 days ago is almost certainly more relevant than one mentioned 2 years ago.\n            - backlink count — prefer candidates mentioned more often overall\n            - if the context strongly suggests this person is being met or encountered for the first time (e.g. 'just met', 'was introduced to', 'new to the team'), prefer returning no match even if a candidate exists — a newly-met person likely doesn't have a profile yet"
-                : "- date last modified — THIS IS THE MOST IMPORTANT SIGNAL for non-person entities. Strongly prefer recently modified files, as they are most likely to be relevant.\n            - days since last backlink edit and backlink count are less meaningful for this entity type; use them as weak signals only\n            - note: a file may have existed for a long time as a recommendation or wishlist item before being experienced — this is expected and not a reason to reject a match"
-            }
-            - sample occurrences — prefer candidates whose prior mention contexts resemble how <entity/> is used here
-            - body preview — use to understand what the candidate's file is actually about
+## How to Decide
 
-            Also return a confidence level for your selection:
-            - "certain" — you are highly confident: strong recent context, clear name and context alignment, little ambiguity
-            - "likely" — reasonable evidence supports the match, but it is not definitive
-            - "uncertain" — best guess from available candidates; could plausibly be wrong
+1. **Name plausibility**: Could the transcribed name plausibly refer to the candidate? For proper nouns, this means phonetic similarity. For descriptive names, this means overlapping concepts or synonymous descriptions. This is necessary but not sufficient.
 
-            - If you cannot confidently select any candidate, set selectedCandidateId to "undefined" and confidence to "uncertain".
-            - Otherwise, return the identifier of the best matching candidate and your confidence.
+2. **Disambiguate using context and activity together**:
+   - **Contextual fit** is the strongest disambiguation signal. Look at who else is mentioned nearby, what topics are being discussed, and what setting is described. Compare this to each candidate's sample occurrences and body preview. If the transcription mentions "Sophia" and one candidate always appears alongside Sophia while another never does, that's decisive — pick the contextual match regardless of activity levels.
+   - **Activity and recency** are the best tiebreaker when context is ambiguous or absent. A candidate referenced dozens of times in recent weeks is far more likely to appear than one mentioned once months ago. When you can't tell from context which candidate is correct, prefer the more actively referenced one.
+   - In short: context *overrides* activity when it points clearly to one candidate, but activity *breaks ties* when context is thin or inconclusive.
+
+3. **Ruling candidates out**: Actively consider reasons a candidate might be the *wrong* match — different social context, mismatched domain, or the text implying something new or unfamiliar. If the text suggests a first encounter or a context that contradicts all candidates, select "none".
+
+## Confidence Levels
+- "certain": The name matches AND context clearly identifies the candidate (e.g. surrounding people or topics match the candidate's known associations), OR only one candidate exists and it has strong activity.
+- "likely": The name matches and activity is strong but context is thin, OR context provides a reasonable but not decisive signal.
+- "uncertain": The match is speculative — the name is a stretch, multiple candidates have similar activity and context, or context is contradictory.
+
+Select "none" (not a confidence level — return selectedCandidateId: "none") when:
+- No candidate's name plausibly matches (by sound or meaning)
+- The text implies something new or unknown
+- All candidates' contexts clearly conflict with the transcription context
         `.trim();
 
         const userPrompt = `
-Entity name as it appears in the text: ${entity.canonicalName}
-Sample context of the entity to match (shown as <entity/>):
-${[
-                "Entity Occurrences:",
-                ...entity.occurrences.map(
-                    (occurrence, idx) =>
-                        `  - Occurrence ${idx + 1}:\n` +
-                        (occurrence.header ? `      Header: ${occurrence.header}\n` : "") +
-                        `      Sentence: ${occurrence.sentence}`,
-                ),
-                "",
-                "Candidate Profiles:",
-                ...enrichedCandidates.map((candidate) => {
-                    const occurrences = candidate.sampleOccurrences
-                        .map(
-                            (occ, occIdx) =>
-                                `      - Occurrence ${occIdx + 1}:\n` +
-                                (occ.header ? `          Header: ${occ.header}\n` : "") +
-                                `          Sentence: ${occ.sentence}`,
-                        )
-                        .join("\n");
-                    const knownNames = this.getMatchingNamesForFile(candidate.enrichedFile);
-                    return (
-                        `  - Candidate ID: ${candidate.candidateId}\n` +
-                        `      Known Names: ${knownNames.join(", ")}\n` +
-                        `      Date Last Modified: ${candidate.dateLastModified}\n` +
-                        `      Backlink Count: ${candidate.backlinkCount}\n` +
-                        `      Days Since Last Backlink Edit: ${candidate.daysSinceLastBacklinkEdit}\n` +
-                        `      Body Preview:\n` +
-                        (candidate.bodyPreview
-                            ? candidate.bodyPreview
-                                .split("\n")
-                                .map((line) => `        ${line}`)
-                                .join("\n")
-                            : "        (No preview available)") +
-                        `\n      Sample Occurrences:\n` +
-                        (occurrences ? occurrences : "        (No sample occurrences)")
-                    );
-                }),
-            ].join("\n")}
-        `;
+## Entity to Match
+Name in transcription: "${entity.canonicalName}" (this spelling comes from speech-to-text and may be badly garbled — do NOT rely on spelling similarity to match)
+Type: ${entity.type}
+
+### Occurrences in transcription:
+${entity.occurrences.map((occ, idx) =>
+            `${idx + 1}. ${occ.header ? `[Under heading: ${occ.header}] ` : ""}${occ.sentence}`
+        ).join("\n")}
+
+---
+
+## Candidates
+
+${enrichedCandidates.map((candidate) => {
+            const lastActiveDays = Math.min(
+                (Date.now() - new Date(candidate.dateLastModified).getTime()) / (1000 * 60 * 60 * 24),
+                candidate.daysSinceLastBacklinkEdit,
+            );
+            const lastActiveString = lastActiveDays === Infinity
+                ? "Never"
+                : `${lastActiveDays.toFixed(0)} days ago`;
+
+            const occurrences = candidate.sampleOccurrences
+                .map((occ, i) =>
+                    `  ${i + 1}. ${occ.header ? `[${occ.header}] ` : ""}${occ.sentence}`
+                ).join("\n");
+
+            return `### ${candidate.candidateId}
+Known names: ${this.getMatchingNamesForFile(candidate.enrichedFile).join(", ")}
+Mentions: ${candidate.backlinkCount} | Last active: ${lastActiveString}
+
+Body preview:
+${candidate.bodyPreview ? candidate.bodyPreview.split("\n").map((l: string) => `> ${l}`).join("\n") : "> (empty)"}
+
+Sample occurrences:
+${occurrences || "  (none)"}`;
+        }).join("\n\n")}
+
+---
+
+Return the best matching candidate ID, or "none" if no candidate is appropriate.
+        `.trim();
 
         console.log(`Select from final candidates AI system prompt for ${entity.canonicalName}:`, systemPrompt);
         console.log(`Select from final candidates AI user prompt for ${entity.canonicalName}:`, userPrompt);
@@ -877,6 +811,7 @@ ${[
                 model: "gpt-4.1-mini",
                 schemaName: "candidate_selection",
                 schema: z.object({
+                    reasoning: z.string(),
                     selectedCandidateId: z.string(),
                     confidence: z.enum(["certain", "likely", "uncertain"]),
                 }),
@@ -888,7 +823,7 @@ ${[
             return { candidate: undefined, confidence: SelectionConfidence.Unmatched };
         }
 
-        if (!selectedCandidateId || selectedCandidateId === "undefined") {
+        if (!selectedCandidateId || selectedCandidateId === "none") {
             return { candidate: undefined, confidence: SelectionConfidence.Unmatched };
         }
 
@@ -933,7 +868,7 @@ ${[
         }
     }
 
-    // TOOD: Make is parameterizable whether we link all occurrences or only the first occurrence per line for each entity
+    // TODO: Make it parameterizable whether we link all occurrences or only the first occurrence per line for each entity
     private applyLinksToText(taggedText: string, selections: EntityFileSelection[]): string {
         const entityRegex = /<entity id="(.*?)"[^>]*>(.*?)<\/entity>/g;
 

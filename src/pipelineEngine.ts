@@ -157,11 +157,19 @@ export class PipelineEngine {
                 if (!step.entity_types) {
                     throw new Error("auto_wikilink step is missing required field 'entity_types'.");
                 }
-                const entityTypes = step.entity_types.map((et) => ({
-                    type: et.type,
-                    description: et.description,
-                    files: et.files.flatMap((glob) => getFilesFromGlob(this.vault, glob, ["md"])),
-                }));
+                const entityTypes = step.entity_types.map((et) => {
+                    if (et.match_strategy !== "phonetic" && et.match_strategy !== "semantic") {
+                        throw new Error(
+                            `Invalid match_strategy '${et.match_strategy}' for entity type '${et.type}'. Must be 'phonetic' or 'semantic'.`,
+                        );
+                    }
+                    return {
+                        type: et.type,
+                        description: et.description,
+                        matchStrategy: et.match_strategy,
+                        files: et.files.flatMap((glob) => getFilesFromGlob(this.vault, glob, ["md"])),
+                    };
+                });
                 const input = he.decode(nunjucks.renderString(step.input, context));
                 return await this.autoWikilinkEngine.applyAutoWikilink(input, entityTypes);
             }

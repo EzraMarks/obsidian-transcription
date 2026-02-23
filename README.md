@@ -107,9 +107,15 @@ steps:
     - name: make_links
       type: auto_wikilink
       description: Link entities in text
-      files:
-          - Tags/**/*
-          - General/Projects/*
+      entity_types:
+          - type: person
+            match_strategy: phonetic
+            files:
+                - Tags/People/*
+          - type: project
+            match_strategy: semantic
+            files:
+                - General/Projects/*
       input: "{{ cleaned_text }}"
 ```
 

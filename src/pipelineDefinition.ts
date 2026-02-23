@@ -46,9 +46,13 @@ export interface TemplatingPipelineStep extends BasePipelineStep {
     template: string;
 }
 
+/** How candidate files are pre-filtered before LLM narrowing */
+export type MatchStrategy = "phonetic" | "semantic";
+
 export interface AutoWikilinkEntityType {
     type: string;
     description?: string;
+    match_strategy: MatchStrategy;
     files: string[];
 }
 

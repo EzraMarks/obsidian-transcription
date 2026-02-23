@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, beforeAll, vi } from "vitest";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { TFile } from "obsidian";
@@ -68,9 +68,11 @@ type FileEntry = { path: string; basename: string; extension: string; mtime: num
 // ── Build mock vault + app backed by the test server ─────────────────────────
 // frontmatterByPath must be pre-fetched in beforeAll — getFileCache is called
 // synchronously by enrichFile() so it cannot make async server calls at call time.
+// backlinksByPath is optional; when provided it enables real recency scoring.
 function buildMockEnv(
     fileEntries: FileEntry[],
     frontmatterByPath: Map<string, Record<string, unknown> | null>,
+    backlinksByPath?: Map<string, [string, unknown[]][]>,
 ) {
     const fileMap = new Map(
         fileEntries.map((e) => {
@@ -81,7 +83,14 @@ function buildMockEnv(
     );
 
     const vault = {
-        getFileByPath: (path: string) => fileMap.get(path) ?? null,
+        getFileByPath: (path: string) => {
+            const found = fileMap.get(path);
+            if (found) return found;
+            // Fallback for files not pre-loaded (e.g. some backlink sources)
+            const fallback = new (TFile as any)(path) as TFile;
+            fallback.stat.mtime = 0; // Very old
+            return fallback;
+        },
         cachedRead: (file: TFile) => serverGetText("/file", { path: file.path }),
         read: (file: TFile) => serverGetText("/file", { path: file.path }),
         create: async (_path: string, _content: string) => {
@@ -95,9 +104,9 @@ function buildMockEnv(
             const fm = frontmatterByPath.get(file.path);
             return fm ? { frontmatter: fm } : null;
         },
-        // Backlink scoring is a ranking signal, not a correctness requirement for tests.
-        // Returning an empty map means the engine falls back to other signals.
-        getBacklinksForFile: (_file: TFile) => ({ data: new Map<string, unknown[]>() }),
+        getBacklinksForFile: (file: TFile) => ({
+            data: new Map<string, unknown[]>(backlinksByPath?.get(file.path) ?? []),
+        }),
     };
 
     const fileManager = {
@@ -110,6 +119,7 @@ function buildMockEnv(
 
 // ── Plugin dir / settings ─────────────────────────────────────────────────────
 const PLUGIN_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SCRATCH_DIR = resolve(PLUGIN_DIR, "tests/scratch");
 
 const settings: TranscriptionSettings = {
     ...DEFAULT_SETTINGS,
@@ -119,7 +129,12 @@ const settings: TranscriptionSettings = {
             ? (JSON.parse(readFileSync(p, "utf8")).openaiKey ?? "")
             : (process.env.OPENAI_API_KEY ?? "");
     })(),
-    lastModifiedFrontmatterField: "date_modified",
+    lastModifiedFrontmatterField: (() => {
+        const p = resolve(PLUGIN_DIR, "data.json");
+        return existsSync(p)
+            ? (JSON.parse(readFileSync(p, "utf8")).lastModifiedFrontmatterField ?? "date_modified")
+            : "date_modified";
+    })(),
 };
 
 // ── Test suite ────────────────────────────────────────────────────────────────
@@ -153,6 +168,7 @@ describe("AutoWikilinkEngine", () => {
 
         personEntityType = {
             type: "person",
+            matchStrategy: "phonetic",
             files: fileEntries.map((e) => fileMap.get(e.path)!).filter(Boolean),
         };
 
@@ -160,7 +176,7 @@ describe("AutoWikilinkEngine", () => {
         console.log(`Loaded ${fileEntries.length} people files from vault.`);
     });
 
-    it("links known people in a journal snippet", async () => {
+    it("links known people in a synthetic journal snippet", async () => {
         const input = [
             "### Work Session",
             "",
@@ -181,4 +197,80 @@ describe("AutoWikilinkEngine", () => {
         expect(result).toMatch(/\[\[.*Carol.*\]\]/);
         expect(result).toContain("Bob");
     });
+});
+
+// ── Real recording wikilink tests (with real backlinks for accurate recency scoring) ──
+
+const REAL_RECORDING_BASENAMES = [
+    "recording-name-1",
+    "recording-name-2",
+];
+
+describe("AutoWikilinkEngine — real recordings (with backlinks)", () => {
+    let engine: AutoWikilinkEngine;
+    let personEntityType: EntityTypeConfig;
+
+    beforeAll(async () => {
+        await serverGet("/health").catch(() => {
+            throw new Error(
+                "Test server not reachable at " + TEST_SERVER + ". " +
+                "Set testMode: true in data.json and rebuild the plugin.",
+            );
+        });
+
+        const peopleEntries = await serverGet<FileEntry[]>("/files", { glob: "Tags/People/*" });
+        // Journal files are backlink sources — the engine looks them up to get their mtime.
+        // Include them in the mock vault so getFileOrThrow doesn't throw.
+        const journalEntries = await serverGet<FileEntry[]>("/files", { glob: "Journal/**" });
+        const allEntries = [...peopleEntries, ...journalEntries];
+        console.log(`Loaded ${peopleEntries.length} people files, ${journalEntries.length} journal files.`);
+
+        // Pre-fetch frontmatter for people files (synchronous getFileCache requires this)
+        const frontmatterByPath = new Map<string, Record<string, unknown> | null>();
+        await Promise.all(
+            peopleEntries.map(async (e) => {
+                const fm = await serverGet<Record<string, unknown> | null>("/frontmatter", { path: e.path });
+                frontmatterByPath.set(e.path, fm);
+            }),
+        );
+
+        // Pre-fetch real backlinks for people files (needed for accurate recency/popularity scoring)
+        const backlinksByPath = new Map<string, [string, unknown[]][]>();
+        for (const e of peopleEntries) {
+            const bl = await serverGet<[string, unknown[]][]>("/backlinks", { path: e.path });
+            backlinksByPath.set(e.path, bl);
+            await new Promise((resolve) => setTimeout(resolve, 50)); // Small delay
+        }
+
+        const { vault, app, fileMap } = buildMockEnv(allEntries, frontmatterByPath, backlinksByPath);
+
+        personEntityType = {
+            type: "person",
+            matchStrategy: "phonetic",
+            files: peopleEntries.map((e) => fileMap.get(e.path)!).filter(Boolean),
+        };
+
+        engine = new AutoWikilinkEngine(settings, vault as any, null, app as any);
+    });
+
+    for (const basename of REAL_RECORDING_BASENAMES) {
+        it(`wikilink step: ${basename}`, async () => {
+            const scratchDir = resolve(SCRATCH_DIR, basename);
+            const p3 = resolve(scratchDir, "03-headers.txt");
+            if (!existsSync(p3)) {
+                console.warn(`Skipping: ${p3} not found. Run pipelineEngine tests first.`);
+                return;
+            }
+
+            const input = readFileSync(p3, "utf8");
+            console.log(`\n══ ${basename} — wikilink step ══════════════════════════════`);
+
+            const result = await engine.applyAutoWikilink(input, [personEntityType]);
+
+            mkdirSync(scratchDir, { recursive: true });
+            writeFileSync(resolve(scratchDir, "04-wikilinks.txt"), result, "utf8");
+
+            console.log("\n── Wikilink output ──\n" + result);
+        }, 5 * 60 * 1000);
+    }
 });

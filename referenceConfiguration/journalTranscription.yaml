@@ -41,7 +41,7 @@ steps:
 
           FORMATTING:
           - Use standard Title Case: capitalize major words; keep articles, short prepositions, and conjunctions (a, an, the, in, on, at, to, of, for, with, and, but, or) lowercase unless they start the title.
-          - Keep titles concise: 3–5 words, 6 at most. Name the single dominant subject directly — skip framing words like "Reflections", "Thoughts", or activity verbs like "Watching" or "Making".
+          - Keep titles concise: 3-5 words, 6 at most. Name the single dominant subject directly — skip framing words like "Reflections", "Thoughts", or activity verbs like "Watching" or "Making".
           - Describe what happened — name the activity or subject directly. Do not interpret or impose a frame on the author's experience.
           - If a paragraph opens with a brief routine activity (like going to the gym) before moving on to the real content, ignore the routine activity in the title.
           - When an activity is shared with a specific person, include their name: "The Last of Us With Amber", not just "The Last of Us".
@@ -57,22 +57,28 @@ steps:
       type: auto_wikilink
       entity_types:
           - type: person
+            match_strategy: phonetic
             files:
                 - Tags/People/*
                 - "*"
           - type: movie
+            match_strategy: phonetic
             files:
                 - Catalogs/Movies/**
           - type: tv_show
+            match_strategy: phonetic
             files:
                 - Catalogs/Shows/**
           - type: music
+            match_strategy: phonetic
             files:
                 - Catalogs/Music/**
           - type: places
+            match_strategy: phonetic
             files:
                 - Catalogs/Places/**
           - type: projects
+            match_strategy: semantic
             description: "Concrete personal projects — things like woodworking, 3D printing, gift planning, or personal software projects I'm building. Not professional work tools, software I'm using, or named instances of things like terminals or AI agents."
             files:
                 - Projects/2026/**
