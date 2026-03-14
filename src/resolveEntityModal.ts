@@ -67,6 +67,7 @@ export class ResolveEntityModal extends Modal {
         // Pre-populate with AI's selections so confirmed matches pass through untouched
         this.selectedFiles = this.selections.map((s) => s.selectedFile?.file ?? null);
         this.newFileComponents = new Array(this.selections.length).fill(null);
+        this.displayNameOverrides = this.selections.map((s) => s.preferredDisplayName ?? null);
     }
 
     onOpen(): void {
