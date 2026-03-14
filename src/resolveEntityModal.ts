@@ -114,7 +114,10 @@ export class ResolveEntityModal extends Modal {
                         ? (this.newFileComponents[idx]?.getValue().trim() || undefined)
                         : undefined,
                 addMisspelling: this.misspellingToggles[idx] ?? undefined,
-                preferredDisplayName: this.displayNameOverrides[idx] ?? undefined,
+                preferredDisplayName:
+                    userChoice === "new"
+                        ? (this.newFileAliasComponents[idx]?.getValue().trim() || undefined)
+                        : (this.displayNameOverrides[idx] ?? undefined),
             };
         });
     }

@@ -363,7 +363,10 @@ export class AutoWikilinkEngine {
 
             const newFile: NewFile | undefined =
                 saved.userChoice === "new" && saved.newFileName
-                    ? { baseName: saved.newFileName }
+                    ? {
+                          baseName: saved.newFileName,
+                          ...(saved.preferredDisplayName ? { aliases: [saved.preferredDisplayName] } : {}),
+                      }
                     : undefined;
 
             return {
