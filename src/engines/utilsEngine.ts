@@ -71,8 +71,9 @@ export class UtilsEngine {
         temperature?: number;
         responseFormat?: object;
         model?: string;
+        maxCompletionTokens?: number;
     }): Promise<string> {
-        const { systemPrompt, userPrompt, temperature, responseFormat, model } = params;
+        const { systemPrompt, userPrompt, temperature, responseFormat, model, maxCompletionTokens } = params;
 
         const messages = [
             ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
@@ -83,6 +84,7 @@ export class UtilsEngine {
             messages,
             temperature,
             response_format: responseFormat,
+            max_completion_tokens: maxCompletionTokens ?? 16384,
         };
         const response = await requestUrl({
             url: "https://api.openai.com/v1/chat/completions",

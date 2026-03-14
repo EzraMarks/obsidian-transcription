@@ -361,6 +361,7 @@ export class AutoWikilinkEngine {
             4. If the same surface form refers to different entities in different parts of the text, treat them as separate entities.
             5. Do not tag pronouns (he/she/they/it) or generic references.
             6. Preserve the original text exactly — only insert <entity> tags, remove nothing.
+            7. Tag entity names inside markdown headers (lines starting with #) just like body text.
 
             Return the entire markdown input with <entity> tags added and nothing else changed.
         `.trim();

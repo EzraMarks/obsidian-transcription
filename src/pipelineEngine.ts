@@ -167,6 +167,7 @@ export class PipelineEngine {
                     model: step.model.name,
                     temperature: step.model.temperature,
                     messages,
+                    max_completion_tokens: 16384,
                 };
 
                 const response = await fetch("https://api.openai.com/v1/chat/completions", {
