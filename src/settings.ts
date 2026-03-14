@@ -38,6 +38,7 @@ export interface SuspendedSelection {
     userChoice: "link" | "new" | "ignore";
     chosenFilePath?: string;
     newFileName?: string;
+    addMisspelling?: boolean;
 }
 
 export interface SuspendedPipelineState {
@@ -57,6 +58,7 @@ interface TranscriptionSettings {
     openaiKey: string;
     pipelineDefinitionsFolder: string;
     lastModifiedFrontmatterField: string;
+    dateCreatedFrontmatterField: string;
     /** When true, starts a local HTTP test server on plugin load. Set in data.json — not exposed in the UI. */
     testMode: boolean;
 }
@@ -67,6 +69,7 @@ const DEFAULT_SETTINGS: TranscriptionSettings = {
     openaiKey: "",
     pipelineDefinitionsFolder: "",
     lastModifiedFrontmatterField: "",
+    dateCreatedFrontmatterField: "date_created",
     testMode: false,
 };
 
@@ -150,6 +153,19 @@ class TranscriptionSettingTab extends PluginSettingTab {
                     .setValue(this.plugin.settings.lastModifiedFrontmatterField)
                     .onChange(async (value) => {
                         this.plugin.settings.lastModifiedFrontmatterField = value.trim();
+                        await this.plugin.saveSettings();
+                    }),
+            );
+
+        new Setting(containerEl)
+            .setName("Date created frontmatter field")
+            .setDesc("Frontmatter field written when creating new notes via the wikilink dialog (e.g. 'date_created').")
+            .addText((text) =>
+                text
+                    .setPlaceholder("e.g. date_created")
+                    .setValue(this.plugin.settings.dateCreatedFrontmatterField)
+                    .onChange(async (value) => {
+                        this.plugin.settings.dateCreatedFrontmatterField = value.trim();
                         await this.plugin.saveSettings();
                     }),
             );

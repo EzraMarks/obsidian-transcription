@@ -64,6 +64,8 @@ export interface EntityFileSelection {
     newFile?: NewFile;
     wasManuallyResolved?: boolean;
     confidence: SelectionConfidence;
+    /** Whether to add the transcribed name as a misspelling on the linked file. Undefined = use default (true). */
+    addMisspelling?: boolean;
 }
 
 export class UserCancelledError extends Error {
@@ -291,6 +293,7 @@ export class AutoWikilinkEngine {
                 selectedFile,
                 newFile,
                 confidence: saved.confidence as SelectionConfidence,
+                addMisspelling: saved.addMisspelling,
             };
         });
 
@@ -957,6 +960,7 @@ Return the best matching candidate ID, or "none" if no candidate is appropriate.
             });
 
             if (newMisspellings.length === 0) continue;
+            if (sel.addMisspelling === false) continue;
 
             await this.app.fileManager.processFrontMatter(file, (fm) => {
                 const existing: string[] = Array.isArray(fm.misspellings) ? fm.misspellings : [];
@@ -1055,9 +1059,10 @@ Return the best matching candidate ID, or "none" if no candidate is appropriate.
         const dateCreated = today.toISOString().split("T")[0]; // "2025-04-28" for example
 
         // Build YAML frontmatter
+        const createdField = this.settings.dateCreatedFrontmatterField || "date_created";
         const frontmatterLines = [
             "---",
-            `date_created: ${dateCreated}`,
+            `${createdField}: ${dateCreated}`,
             ...(aliases ? [`aliases:\n${aliases.map((a) => `  - ${a}`).join("\n")}`] : []),
             ...(misspellings ? [`misspellings:\n${misspellings.map((m) => `  - ${m}`).join("\n")}`] : []),
             "---",

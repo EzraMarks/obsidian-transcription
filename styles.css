@@ -111,6 +111,15 @@
         width: 100%;
     }
 
+    .resolve-entity-misspelling-row {
+        display: none;
+        align-items: center;
+        gap: var(--size-4-2);
+        margin-top: var(--size-4-2);
+        font-size: var(--font-ui-smaller);
+        color: var(--text-muted);
+    }
+
     .resolve-entity-context-panel {
         margin-top: var(--size-4-2);
         padding: var(--size-4-2) var(--size-4-3);

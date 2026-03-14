@@ -37,6 +37,8 @@ export class ResolveEntityModal extends Modal {
     private selectedFiles: (TFile | null)[] = [];
     private newFileComponents: (TextComponent | null)[] = [];
     private choices: ("link" | "new" | "ignore")[] = [];
+    /** null = toggle not shown (name already known); true/false = toggle shown + checked state */
+    private misspellingToggles: (boolean | null)[] = [];
 
     constructor(
         app: App,
@@ -114,6 +116,7 @@ export class ResolveEntityModal extends Modal {
                     userChoice === "new"
                         ? (this.newFileComponents[idx]?.getValue().trim() || undefined)
                         : undefined,
+                addMisspelling: this.misspellingToggles[idx] ?? undefined,
             };
         });
     }
@@ -248,6 +251,42 @@ export class ResolveEntityModal extends Modal {
                 newInput.inputEl.addClass("resolve-entity-new-input");
                 this.newFileComponents[idx] = newInput;
 
+                // Misspelling toggle — shown when linking to a file that doesn't already know this name
+                const misspellingRow = fileArea.createDiv("resolve-entity-misspelling-row");
+                const misspellingCheckbox = misspellingRow.createEl("input", {
+                    attr: { type: "checkbox", id: `misspelling-${idx}` },
+                }) as HTMLInputElement;
+                misspellingCheckbox.checked = entitySel.addMisspelling !== false;
+                const misspellingLabel = misspellingRow.createEl("label", {
+                    attr: { for: `misspelling-${idx}` },
+                });
+                misspellingCheckbox.onchange = () => {
+                    this.misspellingToggles[idx] = misspellingCheckbox.checked;
+                };
+
+                const updateMisspellingToggle = (selectedFile: TFile | null) => {
+                    if (!selectedFile || !linkRadio.checked) {
+                        misspellingRow.style.display = "none";
+                        this.misspellingToggles[idx] = null;
+                        return;
+                    }
+                    const enriched = this.utilsEngine.enrichFile(selectedFile);
+                    const canonicalName = entitySel.entityWithFileCandidates.entity.canonicalName;
+                    const knownNames = [
+                        enriched.file.basename,
+                        ...(enriched.aliases ?? []),
+                        ...(enriched.misspellings ?? []),
+                    ].map((n) => n.toLowerCase());
+                    if (knownNames.includes(canonicalName.toLowerCase())) {
+                        misspellingRow.style.display = "none";
+                        this.misspellingToggles[idx] = null;
+                    } else {
+                        misspellingRow.style.display = "flex";
+                        misspellingLabel.setText(`Add "${canonicalName}" as a misspelling`);
+                        this.misspellingToggles[idx] = misspellingCheckbox.checked;
+                    }
+                };
+
                 chooseButton.onclick = async () => {
                     const candidateFiles =
                         entitySel.entityWithFileCandidates.candidates?.map((c) => c.enrichedFile.file) || [];
@@ -267,6 +306,7 @@ export class ResolveEntityModal extends Modal {
                         chooseButton.setText(`↗ ${file.basename}`);
                         linkRadio.checked = true;
                         updateVisibility();
+                        updateMisspellingToggle(file);
                     };
                     modal.open();
                 };
@@ -278,6 +318,7 @@ export class ResolveEntityModal extends Modal {
                     fileArea.style.display = (linkRadio.checked || newRadio.checked) ? "block" : "none";
                     chooseButton.style.display = linkRadio.checked ? "block" : "none";
                     newInput.inputEl.style.display = newRadio.checked ? "block" : "none";
+                    updateMisspellingToggle(linkRadio.checked ? this.selectedFiles[idx] : null);
                 };
 
                 linkSegment.onclick = () => { linkRadio.checked = true; this.choices[idx] = "link"; updateVisibility(); };
@@ -326,6 +367,7 @@ export class ResolveEntityModal extends Modal {
                 if (selected) {
                     current.selectedFile = this.utilsEngine.enrichFile(selected);
                 }
+                current.addMisspelling = this.misspellingToggles[idx] ?? undefined;
             }
         });
 
