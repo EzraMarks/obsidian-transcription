@@ -120,6 +120,30 @@
         color: var(--text-muted);
     }
 
+    .resolve-entity-new-alias-row,
+    .resolve-entity-display-name-row {
+        display: none;
+        align-items: center;
+        gap: var(--size-4-2);
+        margin-top: var(--size-4-2);
+    }
+
+    .resolve-entity-display-name-label {
+        font-size: var(--font-ui-smaller);
+        color: var(--text-muted);
+        white-space: nowrap;
+    }
+
+    .resolve-entity-display-name-select {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .resolve-entity-new-alias-input {
+        flex: 1;
+        min-width: 0;
+    }
+
     .resolve-entity-context-panel {
         margin-top: var(--size-4-2);
         padding: var(--size-4-2) var(--size-4-3);

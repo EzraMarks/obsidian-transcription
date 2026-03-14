@@ -66,6 +66,8 @@ export interface EntityFileSelection {
     confidence: SelectionConfidence;
     /** Whether to add the transcribed name as a misspelling on the linked file. Undefined = use default (true). */
     addMisspelling?: boolean;
+    /** User-chosen display name when phonetic correction fails. If new (not in basename/aliases), gets saved as an alias. */
+    preferredDisplayName?: string;
 }
 
 export class UserCancelledError extends Error {
@@ -88,6 +90,75 @@ export class UserSuspendedError extends Error {
         super("User suspended pipeline");
         this.name = "UserSuspendedError";
     }
+}
+
+/**
+ * Finds the best matching phonetic encoding from a list of candidates.
+ * By default:
+ *   - Only considers candidates with the same soundex encoding
+ *   - Requires at least one metaphone encoding within a Levenshtein distance of maxMetaphoneDistance
+ *   - Prefers the closest metaphone match, breaking ties by display name similarity
+ */
+function findBestPhoneticEncodingMatch(
+    targetEncoding: PhoneticEncoding,
+    candidateEncodings: PhoneticEncoding[],
+    maxMetaphoneDistance: number = 1,
+    maxSoundexDistance: number = 0,
+): PhoneticMatch | undefined {
+    let bestMatch: PhoneticMatch | undefined;
+
+    for (const candidate of candidateEncodings) {
+        const soundexDistance = levenshtein(targetEncoding.soundexEncoding, candidate.soundexEncoding);
+
+        if (soundexDistance > maxSoundexDistance) continue;
+
+        // Compare all metaphone encodings between target and candidate
+        for (const targetMetaphone of targetEncoding.metaphoneEncodings) {
+            for (const candidateMetaphone of candidate.metaphoneEncodings) {
+                const metaphoneDistance = levenshtein(targetMetaphone, candidateMetaphone);
+
+                if (metaphoneDistance > maxMetaphoneDistance) continue;
+
+                // Also compare the display names for tie-breaking
+                const displayNameDistance = levenshtein(targetEncoding.displayName, candidate.displayName);
+
+                const isBetterMatch =
+                    !bestMatch ||
+                    metaphoneDistance < bestMatch.phoneticDistance ||
+                    (metaphoneDistance === bestMatch.phoneticDistance &&
+                        displayNameDistance < bestMatch.displayNameDistance);
+
+                if (isBetterMatch) {
+                    bestMatch = {
+                        candidateEncoding: candidate,
+                        targetEncoding,
+                        phoneticDistance: metaphoneDistance,
+                        displayNameDistance,
+                    };
+                }
+            }
+        }
+    }
+
+    return bestMatch;
+}
+
+/**
+ * Attempts to correct a raw display name using phonetic matching against a list of known display names.
+ * Returns the best matching display name, or null if no match is found.
+ *
+ * Soundex is intentionally skipped (maxSoundexDistance = MAX_SAFE_INTEGER) — it's too strict for
+ * single-name phonetic variants (e.g. "Cole" vs "Nicole", soundex C400 vs N240).
+ * Metaphone distance ≤ 2 is the sole gate.
+ */
+export function tryCorrectSpelling(rawDisplayName: string, displayNames: string[]): string | null {
+    const bestMatch = findBestPhoneticEncodingMatch(
+        getPhoneticEncoding(rawDisplayName),
+        displayNames.map((str) => getPhoneticEncoding(str)),
+        2,
+        Number.MAX_SAFE_INTEGER,
+    );
+    return bestMatch?.candidateEncoding?.displayName ?? null;
 }
 
 export class AutoWikilinkEngine {
@@ -237,6 +308,7 @@ export class AutoWikilinkEngine {
 
         // Persist any new transcription spellings as misspellings on the target files
         await this.updateMisspellingsFromSelections(finalSelections);
+        await this.persistNewAliases(finalSelections);
 
         // Replace text with links
         const output = this.applyLinksToText(taggedText, finalSelections);
@@ -294,6 +366,7 @@ export class AutoWikilinkEngine {
                 newFile,
                 confidence: saved.confidence as SelectionConfidence,
                 addMisspelling: saved.addMisspelling,
+                preferredDisplayName: saved.preferredDisplayName,
             };
         });
 
@@ -302,6 +375,7 @@ export class AutoWikilinkEngine {
         );
 
         await this.updateMisspellingsFromSelections(finalSelections);
+        await this.persistNewAliases(finalSelections);
         return this.applyLinksToText(state.taggedText, finalSelections);
     }
 
@@ -445,7 +519,7 @@ export class AutoWikilinkEngine {
             .map((file): FileCandidate | undefined => {
                 // Find all phonetic encodings from the entity that match any encoding in the file
                 const matchedEncodings = phoneticEncodings
-                    .map((entityEncoding) => this.findBestPhoneticEncodingMatch(entityEncoding, file.phoneticEncodings))
+                    .map((entityEncoding) => findBestPhoneticEncodingMatch(entityEncoding, file.phoneticEncodings))
                     .filter((it): it is PhoneticMatch => it != undefined);
 
                 if (!matchedEncodings.length) {
@@ -467,57 +541,6 @@ export class AutoWikilinkEngine {
                 return { enrichedFile: file, matchedPhoneticEncoding: bestMatch };
             })
             .filter((candidate): candidate is FileCandidate => candidate != undefined);
-    }
-
-    /**
-     * Finds the best matching phonetic encoding from a list of candidates.
-     * By default:
-     *   - Only considers candidates with the same soundex encoding
-     *   - Requires at least one metaphone encoding within a Levenshtein distance of maxLevenshteinDistance
-     *   - Prefers the closest metaphone match, breaking ties by display name similarity
-     */
-    private findBestPhoneticEncodingMatch(
-        targetEncoding: PhoneticEncoding,
-        candidateEncodings: PhoneticEncoding[],
-        maxMetaphoneDistance: number = 1,
-        maxSoundexDistance: number = 0,
-    ): PhoneticMatch | undefined {
-        let bestMatch: PhoneticMatch | undefined;
-
-        for (const candidate of candidateEncodings) {
-            const soundexDistance = levenshtein(targetEncoding.soundexEncoding, candidate.soundexEncoding);
-
-            if (soundexDistance > maxSoundexDistance) continue;
-
-            // Compare all metaphone encodings between target and candidate
-            for (const targetMetaphone of targetEncoding.metaphoneEncodings) {
-                for (const candidateMetaphone of candidate.metaphoneEncodings) {
-                    const metaphoneDistance = levenshtein(targetMetaphone, candidateMetaphone);
-
-                    if (metaphoneDistance > maxMetaphoneDistance) continue;
-
-                    // Also compare the display names for tie-breaking
-                    const displayNameDistance = levenshtein(targetEncoding.displayName, candidate.displayName);
-
-                    const isBetterMatch =
-                        !bestMatch ||
-                        metaphoneDistance < bestMatch.phoneticDistance ||
-                        (metaphoneDistance === bestMatch.phoneticDistance &&
-                            displayNameDistance < bestMatch.displayNameDistance);
-
-                    if (isBetterMatch) {
-                        bestMatch = {
-                            candidateEncoding: candidate,
-                            targetEncoding,
-                            phoneticDistance: metaphoneDistance,
-                            displayNameDistance,
-                        };
-                    }
-                }
-            }
-        }
-
-        return bestMatch;
     }
 
     /** Retrieves a few examples of the context in which this file has been previously referenced */
@@ -974,6 +997,39 @@ Return the best matching candidate ID, or "none" if no candidate is appropriate.
         }
     }
 
+    /**
+     * For each selection where the user chose a preferred display name that isn't already
+     * a known alias or basename, persist it as a new alias on the target file.
+     */
+    private async persistNewAliases(selections: EntityFileSelection[]): Promise<void> {
+        for (const sel of selections) {
+            if (!sel.selectedFile || !sel.preferredDisplayName) continue;
+
+            const file = sel.selectedFile.file;
+            const enriched = this.utilsEngine.enrichFile(file);
+            const knownAliasNames = [
+                file.basename,
+                ...(enriched.aliases ?? []),
+            ].map((n) => n.toLowerCase());
+
+            if (knownAliasNames.includes(sel.preferredDisplayName.toLowerCase())) continue;
+
+            await this.app.fileManager.processFrontMatter(file, (fm) => {
+                const existing: string[] = Array.isArray(fm.aliases) ? fm.aliases : [];
+                const existingLower = existing.map((s: string) => s.toLowerCase());
+                if (!existingLower.includes(sel.preferredDisplayName!.toLowerCase())) {
+                    fm.aliases = [...existing, sel.preferredDisplayName!];
+                }
+                // Promote from misspelling to alias — remove it from misspellings if present
+                const existingMisspellings: string[] = Array.isArray(fm.misspellings) ? fm.misspellings : [];
+                fm.misspellings = existingMisspellings.filter(
+                    (m: string) => m.toLowerCase() !== sel.preferredDisplayName!.toLowerCase(),
+                );
+                if (fm.misspellings.length === 0) delete fm.misspellings;
+            });
+        }
+    }
+
     // TODO: Make it parameterizable whether we link all occurrences or only the first occurrence per line for each entity
     private applyLinksToText(taggedText: string, selections: EntityFileSelection[]): string {
         const entityRegex = /<entity id="(.*?)"[^>]*>(.*?)<\/entity>/g;
@@ -1010,7 +1066,7 @@ Return the best matching candidate ID, or "none" if no candidate is appropriate.
                 const displayNames = [targetName, ...(sel.selectedFile?.aliases ?? sel?.newFile?.aliases ?? [])];
 
                 // Perform spelling correction on the surface text
-                const displayName = this.correctSpelling(surfaceText, displayNames);
+                const displayName = tryCorrectSpelling(surfaceText, displayNames) ?? sel.preferredDisplayName ?? surfaceText;
 
                 if (isHeader) {
                     // In headers, just use the displayName (no wikilink)
@@ -1036,19 +1092,6 @@ Return the best matching candidate ID, or "none" if no candidate is appropriate.
         });
 
         return replacedLines.join("\n");
-    }
-
-    private correctSpelling(rawDisplayName: string, displayNames: string[]): string {
-        // Soundex is intentionally skipped here — it's too strict for single-name phonetic variants
-        // (e.g. "Cole" vs "Nicole", soundex C400 vs N240). Metaphone distance ≤ 2 is the sole gate.
-        const bestMatch = this.findBestPhoneticEncodingMatch(
-            getPhoneticEncoding(rawDisplayName),
-            displayNames.map((str) => getPhoneticEncoding(str)),
-            2,
-            Number.MAX_SAFE_INTEGER,
-        );
-
-        return bestMatch?.candidateEncoding?.displayName || rawDisplayName;
     }
 
     private async createNewFile(folderPath: string, fileData: NewFile): Promise<TFile> {

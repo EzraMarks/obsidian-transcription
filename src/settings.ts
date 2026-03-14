@@ -39,6 +39,7 @@ export interface SuspendedSelection {
     chosenFilePath?: string;
     newFileName?: string;
     addMisspelling?: boolean;
+    preferredDisplayName?: string;
 }
 
 export interface SuspendedPipelineState {

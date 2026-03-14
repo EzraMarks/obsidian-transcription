@@ -1,6 +1,7 @@
 import { App, Modal, Notice, TFile, FuzzySuggestModal, TextComponent, FuzzyMatch } from "obsidian";
 import { SelectionConfidence } from "./engines/selectionConfidence";
 import type { EntityFileSelection } from "./engines/autoWikilinkEngine";
+import { tryCorrectSpelling } from "./engines/autoWikilinkEngine";
 import { EnrichedFile, UtilsEngine } from "./engines/utilsEngine";
 import type { SuspendedSelection } from "./settings";
 
@@ -36,9 +37,12 @@ export class ResolveEntityModal extends Modal {
 
     private selectedFiles: (TFile | null)[] = [];
     private newFileComponents: (TextComponent | null)[] = [];
+    private newFileAliasComponents: (TextComponent | null)[] = [];
     private choices: ("link" | "new" | "ignore")[] = [];
     /** null = toggle not shown (name already known); true/false = toggle shown + checked state */
     private misspellingToggles: (boolean | null)[] = [];
+    /** User-chosen display name override when phonetic correction fails; null = not set */
+    private displayNameOverrides: (string | null)[] = [];
 
     constructor(
         app: App,
@@ -117,8 +121,59 @@ export class ResolveEntityModal extends Modal {
                         ? (this.newFileComponents[idx]?.getValue().trim() || undefined)
                         : undefined,
                 addMisspelling: this.misspellingToggles[idx] ?? undefined,
+                preferredDisplayName: this.displayNameOverrides[idx] ?? undefined,
             };
         });
+    }
+
+    private getFileDisplayNames(file: TFile): string[] {
+        const enriched = this.utilsEngine.enrichFile(file);
+        return [file.basename, ...(enriched.aliases ?? [])];
+    }
+
+    private updateDisplayNameRow(
+        idx: number,
+        canonicalName: string,
+        selectedFile: TFile | null,
+        displayNameRow: HTMLElement,
+        displayNameSelect: HTMLSelectElement,
+        newAliasInput: HTMLInputElement,
+        linkRadioChecked: boolean,
+    ): void {
+        if (!selectedFile || !linkRadioChecked) {
+            displayNameRow.style.display = "none";
+            return;
+        }
+
+        const displayNames = this.getFileDisplayNames(selectedFile);
+        const corrected = tryCorrectSpelling(canonicalName, displayNames);
+
+        if (corrected !== null) {
+            displayNameRow.style.display = "none";
+            this.displayNameOverrides[idx] = null;
+            return;
+        }
+
+        // Phonetic correction failed — show the row
+        displayNameRow.style.display = "flex";
+
+        // Rebuild select options
+        displayNameSelect.empty();
+        for (const name of displayNames) {
+            displayNameSelect.createEl("option", { text: name, value: name });
+        }
+        displayNameSelect.createEl("option", { text: "+ Add alias", value: "__new__" });
+
+        // Default: first alias if available, otherwise basename
+        const defaultName = displayNames.length > 1 ? displayNames[1] : displayNames[0];
+        const current = this.displayNameOverrides[idx];
+        const isKnown = current && displayNames.includes(current);
+        displayNameSelect.value = isKnown ? current! : (current ? "__new__" : defaultName);
+        if (!this.displayNameOverrides[idx]) this.displayNameOverrides[idx] = defaultName;
+
+        const isNew = displayNameSelect.value === "__new__";
+        newAliasInput.style.display = isNew ? "block" : "none";
+        newAliasInput.value = isNew ? (current ?? "") : "";
     }
 
     private render(): void {
@@ -251,6 +306,14 @@ export class ResolveEntityModal extends Modal {
                 newInput.inputEl.addClass("resolve-entity-new-input");
                 this.newFileComponents[idx] = newInput;
 
+                const newAliasRow = fileArea.createDiv("resolve-entity-new-alias-row");
+                newAliasRow.createEl("span", { text: "Display as:", cls: "resolve-entity-display-name-label" });
+                const newFileAliasComp = new TextComponent(newAliasRow);
+                newFileAliasComp.inputEl.placeholder = "Alias (optional)";
+                newFileAliasComp.inputEl.addClass("resolve-entity-new-alias-input");
+                newFileAliasComp.setValue(entitySel.newFile?.aliases?.[0] ?? "");
+                this.newFileAliasComponents[idx] = newFileAliasComp;
+
                 // Misspelling toggle — shown when linking to a file that doesn't already know this name
                 const misspellingRow = fileArea.createDiv("resolve-entity-misspelling-row");
                 const misspellingCheckbox = misspellingRow.createEl("input", {
@@ -264,6 +327,8 @@ export class ResolveEntityModal extends Modal {
                     this.misspellingToggles[idx] = misspellingCheckbox.checked;
                 };
 
+                const canonicalName = entitySel.entityWithFileCandidates.entity.canonicalName;
+
                 const updateMisspellingToggle = (selectedFile: TFile | null) => {
                     if (!selectedFile || !linkRadio.checked) {
                         misspellingRow.style.display = "none";
@@ -271,7 +336,6 @@ export class ResolveEntityModal extends Modal {
                         return;
                     }
                     const enriched = this.utilsEngine.enrichFile(selectedFile);
-                    const canonicalName = entitySel.entityWithFileCandidates.entity.canonicalName;
                     const knownNames = [
                         enriched.file.basename,
                         ...(enriched.aliases ?? []),
@@ -285,6 +349,45 @@ export class ResolveEntityModal extends Modal {
                         misspellingLabel.setText(`Add "${canonicalName}" as a misspelling`);
                         this.misspellingToggles[idx] = misspellingCheckbox.checked;
                     }
+                };
+
+                // Display name row — shown only when phonetic correction fails
+                const displayNameRow = fileArea.createDiv("resolve-entity-display-name-row");
+                displayNameRow.createEl("span", { text: "Display as:", cls: "resolve-entity-display-name-label" });
+
+                const displayNameSelect = displayNameRow.createEl("select") as HTMLSelectElement;
+                displayNameSelect.addClass("resolve-entity-display-name-select");
+                displayNameSelect.onchange = () => {
+                    if (displayNameSelect.value === "__new__") {
+                        newAliasInput.style.display = "block";
+                        newAliasInput.focus();
+                        this.displayNameOverrides[idx] = newAliasInput.value.trim() || null;
+                    } else {
+                        newAliasInput.style.display = "none";
+                        this.displayNameOverrides[idx] = displayNameSelect.value;
+                    }
+                };
+
+                const newAliasInput = displayNameRow.createEl("input") as HTMLInputElement;
+                newAliasInput.type = "text";
+                newAliasInput.placeholder = "New alias…";
+                newAliasInput.addClass("resolve-entity-new-alias-input");
+                newAliasInput.style.display = "none";
+                newAliasInput.oninput = () => {
+                    this.displayNameOverrides[idx] = newAliasInput.value.trim() || null;
+                };
+
+                const refreshDisplayNameRow = (selectedFile: TFile | null) => {
+                    this.displayNameOverrides[idx] = null;
+                    this.updateDisplayNameRow(
+                        idx,
+                        canonicalName,
+                        selectedFile,
+                        displayNameRow,
+                        displayNameSelect,
+                        newAliasInput,
+                        linkRadio.checked,
+                    );
                 };
 
                 chooseButton.onclick = async () => {
@@ -307,6 +410,7 @@ export class ResolveEntityModal extends Modal {
                         linkRadio.checked = true;
                         updateVisibility();
                         updateMisspellingToggle(file);
+                        refreshDisplayNameRow(file);
                     };
                     modal.open();
                 };
@@ -318,7 +422,17 @@ export class ResolveEntityModal extends Modal {
                     fileArea.style.display = (linkRadio.checked || newRadio.checked) ? "block" : "none";
                     chooseButton.style.display = linkRadio.checked ? "block" : "none";
                     newInput.inputEl.style.display = newRadio.checked ? "block" : "none";
+                    newAliasRow.style.display = newRadio.checked ? "flex" : "none";
                     updateMisspellingToggle(linkRadio.checked ? this.selectedFiles[idx] : null);
+                    this.updateDisplayNameRow(
+                        idx,
+                        canonicalName,
+                        linkRadio.checked ? this.selectedFiles[idx] : null,
+                        displayNameRow,
+                        displayNameSelect,
+                        newAliasInput,
+                        linkRadio.checked,
+                    );
                 };
 
                 linkSegment.onclick = () => { linkRadio.checked = true; this.choices[idx] = "link"; updateVisibility(); };
@@ -360,7 +474,9 @@ export class ResolveEntityModal extends Modal {
             if (choice === "new") {
                 const name = this.newFileComponents[idx]?.getValue().trim();
                 if (name) {
-                    current.newFile = { baseName: name };
+                    const alias = this.newFileAliasComponents[idx]?.getValue().trim() || undefined;
+                    current.newFile = { baseName: name, ...(alias ? { aliases: [alias] } : {}) };
+                    current.preferredDisplayName = alias;
                 }
             } else if (choice === "link") {
                 const selected = this.selectedFiles[idx];
@@ -368,6 +484,7 @@ export class ResolveEntityModal extends Modal {
                     current.selectedFile = this.utilsEngine.enrichFile(selected);
                 }
                 current.addMisspelling = this.misspellingToggles[idx] ?? undefined;
+                current.preferredDisplayName = this.displayNameOverrides[idx] ?? undefined;
             }
         });
 
