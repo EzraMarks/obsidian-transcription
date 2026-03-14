@@ -364,9 +364,9 @@ export class AutoWikilinkEngine {
             const newFile: NewFile | undefined =
                 saved.userChoice === "new" && saved.newFileName
                     ? {
-                          baseName: saved.newFileName,
-                          ...(saved.preferredDisplayName ? { aliases: [saved.preferredDisplayName] } : {}),
-                      }
+                        baseName: saved.newFileName,
+                        ...(saved.preferredDisplayName ? { aliases: [saved.preferredDisplayName] } : {}),
+                    }
                     : undefined;
 
             return {
@@ -444,7 +444,6 @@ export class AutoWikilinkEngine {
             4. If the same surface form refers to different entities in different parts of the text, treat them as separate entities.
             5. Do not tag pronouns (he/she/they/it) or generic references.
             6. Preserve the original text exactly — only insert <entity> tags, remove nothing.
-            7. Tag entity names inside markdown headers (lines starting with #) just like body text.
 
             Return the entire markdown input with <entity> tags added and nothing else changed.
         `.trim();
@@ -1036,6 +1035,13 @@ Return the best matching candidate ID, or "none" if no candidate is appropriate.
         }
     }
 
+    private resolveDisplayName(sel: EntityFileSelection, surfaceText: string): string | null {
+        const targetName = sel.selectedFile?.file.basename || sel.newFile?.baseName;
+        if (!targetName) return null;
+        const displayNames = [targetName, ...(sel.selectedFile?.aliases ?? sel.newFile?.aliases ?? [])];
+        return tryCorrectSpelling(surfaceText, displayNames) ?? sel.preferredDisplayName ?? surfaceText;
+    }
+
     // TODO: Make it parameterizable whether we link all occurrences or only the first occurrence per line for each entity
     private applyLinksToText(taggedText: string, selections: EntityFileSelection[]): string {
         const entityRegex = /<entity id="(.*?)"[^>]*>(.*?)<\/entity>/g;
@@ -1059,42 +1065,37 @@ Return the best matching candidate ID, or "none" if no candidate is appropriate.
             const linkedEntities = new Set<string>();
 
             // Replace entities in the line, only linking the first occurrence per entity
-            return line.replace(entityRegex, (_fullMatch, canonicalName, surfaceText) => {
+            let result = line.replace(entityRegex, (_fullMatch, canonicalName, surfaceText) => {
                 const sel = entityToSelection.get(canonicalName);
+                const displayName = sel ? this.resolveDisplayName(sel, surfaceText) : null;
 
-                const targetName = sel?.selectedFile?.file.basename || sel?.newFile?.baseName;
+                if (displayName === null) return surfaceText; // no selection → unwrap
 
-                if (!targetName) {
-                    // No selection → just unwrap the <entity> and keep the surface text
-                    return surfaceText;
-                }
+                if (isHeader) return displayName; // headers: corrected name, no wikilink
 
-                const displayNames = [targetName, ...(sel.selectedFile?.aliases ?? sel?.newFile?.aliases ?? [])];
-
-                // Perform spelling correction on the surface text
-                const displayName = tryCorrectSpelling(surfaceText, displayNames) ?? sel.preferredDisplayName ?? surfaceText;
-
-                if (isHeader) {
-                    // In headers, just use the displayName (no wikilink)
-                    return displayName;
-                }
-
-                // Not a header: handle wikilinking
-                const isFirstOccurrence = !linkedEntities.has(canonicalName);
-
-                if (isFirstOccurrence) {
+                // Body: wikilink on first occurrence, plain display name after
+                const targetName = sel!.selectedFile?.file.basename || sel!.newFile!.baseName;
+                if (!linkedEntities.has(canonicalName)) {
                     linkedEntities.add(canonicalName);
-                    // First occurrence in this line: wikilink
-                    if (targetName === displayName) {
-                        return `[[${targetName}]]`;
-                    } else {
-                        return `[[${targetName}|${displayName}]]`;
-                    }
-                } else {
-                    // Subsequent occurrence: just use displayName
-                    return displayName;
+                    return targetName === displayName ? `[[${targetName}]]` : `[[${targetName}|${displayName}]]`;
                 }
+                return displayName;
             });
+
+            // LLMs reliably skip tagging entity names in markdown headers. Do a second pass:
+            // for each resolved entity, replace any untagged occurrence of its canonical name
+            // in header lines with the corrected display name.
+            if (isHeader) {
+                for (const [canonicalName, sel] of entityToSelection) {
+                    const displayName = this.resolveDisplayName(sel, canonicalName);
+                    if (displayName === null) continue;
+
+                    const escaped = canonicalName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                    result = result.replace(new RegExp(`\\b${escaped}\\b`, "gi"), displayName);
+                }
+            }
+
+            return result;
         });
 
         return replacedLines.join("\n");
