@@ -960,7 +960,7 @@ Return the best matching candidate ID, or "none" if no candidate is appropriate.
             });
 
             if (newMisspellings.length === 0) continue;
-            if (sel.addMisspelling === false) continue;
+            if (sel.addMisspelling !== true) continue;
 
             await this.app.fileManager.processFrontMatter(file, (fm) => {
                 const existing: string[] = Array.isArray(fm.misspellings) ? fm.misspellings : [];

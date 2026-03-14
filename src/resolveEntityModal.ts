@@ -256,7 +256,7 @@ export class ResolveEntityModal extends Modal {
                 const misspellingCheckbox = misspellingRow.createEl("input", {
                     attr: { type: "checkbox", id: `misspelling-${idx}` },
                 }) as HTMLInputElement;
-                misspellingCheckbox.checked = entitySel.addMisspelling !== false;
+                misspellingCheckbox.checked = entitySel.addMisspelling === true;
                 const misspellingLabel = misspellingRow.createEl("label", {
                     attr: { for: `misspelling-${idx}` },
                 });
