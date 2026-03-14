@@ -69,7 +69,7 @@ const DEFAULT_SETTINGS: TranscriptionSettings = {
     openaiKey: "",
     pipelineDefinitionsFolder: "",
     lastModifiedFrontmatterField: "",
-    dateCreatedFrontmatterField: "date_created",
+    dateCreatedFrontmatterField: "",
     testMode: false,
 };
 

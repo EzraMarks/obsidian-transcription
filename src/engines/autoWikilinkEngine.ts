@@ -1059,10 +1059,10 @@ Return the best matching candidate ID, or "none" if no candidate is appropriate.
         const dateCreated = today.toISOString().split("T")[0]; // "2025-04-28" for example
 
         // Build YAML frontmatter
-        const createdField = this.settings.dateCreatedFrontmatterField || "date_created";
+        const createdField = this.settings.dateCreatedFrontmatterField;
         const frontmatterLines = [
             "---",
-            `${createdField}: ${dateCreated}`,
+            ...(createdField ? [`${createdField}: ${dateCreated}`] : []),
             ...(aliases ? [`aliases:\n${aliases.map((a) => `  - ${a}`).join("\n")}`] : []),
             ...(misspellings ? [`misspellings:\n${misspellings.map((m) => `  - ${m}`).join("\n")}`] : []),
             "---",
