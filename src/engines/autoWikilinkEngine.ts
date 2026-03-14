@@ -1,5 +1,5 @@
 import { TFile, Vault, App } from "obsidian";
-import { TranscriptionSettings } from "src/settings";
+import { TranscriptionSettings, SuspendedSelection, SuspendedPipelineState } from "src/settings";
 import { StatusBar } from "../status";
 import levenshtein from "js-levenshtein";
 import { z } from "zod";
@@ -70,6 +70,21 @@ export class UserCancelledError extends Error {
     constructor() {
         super("User cancelled");
         this.name = "UserCancelledError";
+    }
+}
+
+export class UserSuspendedError extends Error {
+    /** Attached by pipelineEngine.runPipeline when it catches this error */
+    scopedContext?: Record<string, string>;
+    stepName?: string;
+    fileTypeTags?: Record<string, string[]>;
+
+    constructor(
+        public readonly taggedText: string,
+        public readonly selections: SuspendedSelection[],
+    ) {
+        super("User suspended pipeline");
+        this.name = "UserSuspendedError";
     }
 }
 
@@ -202,13 +217,9 @@ export class AutoWikilinkEngine {
         );
 
         // Human resolve unresolved
-        const finalSelections = await new Promise<EntityFileSelection[] | null>((resolve) => {
-            new ResolveEntityModal(this.app, selections, allEnrichedFiles, fileTypeTags, this.utilsEngine, resolve).open();
-        });
-
-        if (finalSelections === null) {
-            throw new UserCancelledError();
-        }
+        const finalSelections = await this.openResolveModal(
+            selections, allEnrichedFiles, fileTypeTags, taggedText,
+        );
 
         console.log(
             "Final selections (but readable)",
@@ -228,6 +239,96 @@ export class AutoWikilinkEngine {
         // Replace text with links
         const output = this.applyLinksToText(taggedText, finalSelections);
         return output;
+    }
+
+    /**
+     * Re-open the wikilink dialog from a saved suspended state, with fresh vault data.
+     * Returns the final linked text, or throws UserCancelledError / UserSuspendedError.
+     */
+    async resumeAutoWikilink(state: SuspendedPipelineState): Promise<string> {
+        // Rebuild allEnrichedFiles from live vault so newly-created notes appear
+        const allEnrichedFiles = this.app.vault
+            .getMarkdownFiles()
+            .map((f) => this.utilsEngine.enrichFile(f));
+
+        const fileTypeTags = new Map<string, string[]>(Object.entries(state.fileTypeTags));
+
+        // Re-hydrate EntityFileSelection[] from saved state
+        const selections: EntityFileSelection[] = state.selections.map((saved) => {
+            const candidates: FileCandidate[] = saved.candidatePaths
+                .map((p) => this.app.vault.getFileByPath(p))
+                .filter((f): f is TFile => f !== null)
+                .map((f) => ({ enrichedFile: this.utilsEngine.enrichFile(f) }));
+
+            let selectedFile: EnrichedFile | undefined;
+            if (saved.userChoice === "link" && saved.chosenFilePath) {
+                const f = this.app.vault.getFileByPath(saved.chosenFilePath);
+                if (f) selectedFile = this.utilsEngine.enrichFile(f);
+            }
+
+            const newFile: NewFile | undefined =
+                saved.userChoice === "new" && saved.newFileName
+                    ? { baseName: saved.newFileName }
+                    : undefined;
+
+            const entity: ExtractedEntity = {
+                canonicalName: saved.entity.canonicalName,
+                type: saved.entity.type,
+                occurrences: saved.entity.occurrences.map((o) => ({
+                    header: null,
+                    displayName: o.displayName,
+                    displayNamePhoneticEncoding: {
+                        displayName: o.displayName,
+                        soundexEncoding: "",
+                        metaphoneEncodings: [],
+                    },
+                    sentence: o.sentence,
+                })),
+            };
+
+            return {
+                entityWithFileCandidates: { entity, candidates },
+                selectedFile,
+                newFile,
+                confidence: saved.confidence as SelectionConfidence,
+            };
+        });
+
+        const finalSelections = await this.openResolveModal(
+            selections, allEnrichedFiles, fileTypeTags, state.taggedText,
+        );
+
+        await this.updateMisspellingsFromSelections(finalSelections);
+        return this.applyLinksToText(state.taggedText, finalSelections);
+    }
+
+    private async openResolveModal(
+        selections: EntityFileSelection[],
+        allEnrichedFiles: EnrichedFile[],
+        fileTypeTags: Map<string, string[]>,
+        taggedText: string,
+    ): Promise<EntityFileSelection[]> {
+        let suspendedSelections: SuspendedSelection[] | null = null;
+        const finalSelections = await new Promise<EntityFileSelection[] | null>((resolve) => {
+            new ResolveEntityModal(
+                this.app,
+                selections,
+                allEnrichedFiles,
+                fileTypeTags,
+                this.utilsEngine,
+                resolve,
+                (s) => { suspendedSelections = s; resolve(null); },
+            ).open();
+        });
+
+        if (suspendedSelections !== null) {
+            const err = new UserSuspendedError(taggedText, suspendedSelections);
+            err.fileTypeTags = Object.fromEntries(fileTypeTags);
+            throw err;
+        }
+
+        if (finalSelections === null) throw new UserCancelledError();
+        return finalSelections;
     }
 
     /**

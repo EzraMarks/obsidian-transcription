@@ -2,12 +2,12 @@ import he from "he";
 import { Vault, App, TFile, Notice } from "obsidian";
 import nunjucks from "nunjucks";
 import { z } from "zod";
-import { AutoWikilinkEngine } from "./engines/autoWikilinkEngine";
+import { AutoWikilinkEngine, UserSuspendedError } from "./engines/autoWikilinkEngine";
 import { AudioTranscriptionEngine } from "./engines/audioTranscriptionEngine";
 import { PipelineStep, PipelineInputSource, PipelineDefinition, BasePipelineStep } from "./pipelineDefinition";
 import yaml from "yaml";
 import { PromptModal } from "./promptModal";
-import { TranscriptionSettings } from "./settings";
+import { TranscriptionSettings, SuspendedPipelineState } from "./settings";
 import { StatusBar } from "./status";
 import { getFilesFromGlob } from "./vaultGlob";
 import { UtilsEngine } from "./engines/utilsEngine";
@@ -47,7 +47,7 @@ export class PipelineEngine {
 
         for (const step of pipelineDefinition.steps) {
             const scopedContext = { ...context, ...results };
-            const result = await this.executeStep(step, scopedContext);
+            const result = await this.executeStepAndTag(step, scopedContext);
             if (result !== undefined) {
                 results[step.name] = result;
                 lastSuccessfulStepName = step.name;
@@ -59,6 +59,33 @@ export class PipelineEngine {
         }
 
         return results[lastSuccessfulStepName];
+    }
+
+    async resumeFromSuspended(state: SuspendedPipelineState): Promise<string> {
+        const linkedText = await this.autoWikilinkEngine.resumeAutoWikilink(state);
+
+        // Re-parse pipeline to get steps after auto_wikilink
+        const pipelineFile = this.app.vault.getFileByPath(state.pipelineFilePath);
+        if (!pipelineFile) throw new Error(`Pipeline file not found: ${state.pipelineFilePath}`);
+        const pipelineDefinition = await this.parsePipelineDefinition(pipelineFile);
+
+        const autoWikilinkIdx = pipelineDefinition.steps.findIndex(
+            (s) => s.name === state.autoWikilinkStepName,
+        );
+        const remainingSteps = pipelineDefinition.steps.slice(autoWikilinkIdx + 1);
+
+        let updatedContext = { ...state.scopedContext, [state.autoWikilinkStepName]: linkedText };
+        let lastResult = linkedText;
+
+        for (const step of remainingSteps) {
+            const result = await this.executeStepAndTag(step, updatedContext);
+            if (result !== undefined) {
+                updatedContext = { ...updatedContext, [step.name]: result };
+                lastResult = result;
+            }
+        }
+
+        return lastResult;
     }
 
     private async resolveContext(
@@ -102,6 +129,18 @@ export class PipelineEngine {
         }
 
         return context;
+    }
+
+    private async executeStepAndTag(step: PipelineStep, context: Record<string, string>): Promise<string | undefined> {
+        try {
+            return await this.executeStep(step, context);
+        } catch (error) {
+            if (error instanceof UserSuspendedError) {
+                error.scopedContext = context;
+                error.stepName = step.name;
+            }
+            throw error;
+        }
     }
 
     private async executeStep(step: PipelineStep, context: Record<string, string>): Promise<string | undefined> {

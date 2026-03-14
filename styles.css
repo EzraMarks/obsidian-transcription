@@ -129,14 +129,6 @@
     }
 }
 
-.resolve-entity-confirm-modal {
-    .resolve-entity-confirm-buttons {
-        display: flex;
-        gap: var(--size-4-2);
-        justify-content: flex-end;
-        margin-top: var(--size-4-4);
-    }
-}
 
 .resolve-entity-badge {
     font-size: var(--font-ui-smaller);
@@ -159,6 +151,42 @@
 
 .is-candidate {
     font-weight: bold;
+}
+
+.suspend-resume-row {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-4);
+    padding: var(--size-4-2) 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+
+    &:last-child { border-bottom: none; }
+}
+
+.suspend-resume-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: var(--size-4-1);
+    min-width: 0;
+}
+
+.suspend-resume-filename {
+    font-weight: var(--font-semibold);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.suspend-resume-date {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+}
+
+.suspend-resume-buttons {
+    display: flex;
+    gap: var(--size-4-3);
+    flex-shrink: 0;
 }
 
 .file-suggest-row {

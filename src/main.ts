@@ -2,6 +2,7 @@ import { ChildProcess } from "child_process";
 import {
     Editor,
     MarkdownView,
+    Modal,
     Plugin,
     TFile,
     Notice,
@@ -10,9 +11,9 @@ import {
     Menu,
 } from "obsidian";
 import { StatusBar } from "./status";
-import { TranscriptionSettings, DEFAULT_SETTINGS, TranscriptionSettingTab } from "./settings";
+import { TranscriptionSettings, DEFAULT_SETTINGS, TranscriptionSettingTab, SuspendedPipelineState } from "./settings";
 import { PipelineEngine } from "./pipelineEngine";
-import { UserCancelledError } from "./engines/autoWikilinkEngine";
+import { UserCancelledError, UserSuspendedError } from "./engines/autoWikilinkEngine";
 import { TranscriptionModal } from "./transcriptionModal";
 import { TestServer } from "./testServer";
 
@@ -28,6 +29,7 @@ export default class Transcription extends Plugin {
         task: Promise<void>;
         abortController: AbortController;
     }> = [];
+    private suspendedPipelines: SuspendedPipelineState[] = [];
     private testServer: TestServer | null = null;
     public static transcribeFileExtensions: string[] = [
         "mp3",
@@ -104,29 +106,29 @@ export default class Transcription extends Plugin {
 
             const transcription = await this.pipelineEngine.runPipeline(parent_file, file, pipelineFile);
 
-            let fileText = await this.app.vault.read(parent_file);
-            const fileLinkString = this.app.metadataCache.fileToLinktext(file, parent_file.path);
-            const fileLinkStringTagged = `[[${fileLinkString}]]`;
-
-            const startReplacementIndex = fileText.indexOf(fileLinkStringTagged) + fileLinkStringTagged.length;
-
-            fileText = [
-                fileText.slice(0, startReplacementIndex),
-                `\n${transcription}`,
-                fileText.slice(startReplacementIndex),
-            ].join("");
-
-            //check if abortion signal is aborted
-
             if (abortController?.signal?.aborted) {
                 new Notice(`Transcription of ${file.name} cancelled!`);
                 return;
             }
 
-            await this.app.vault.modify(parent_file, fileText);
+            await this.insertTranscriptionAfterLink(parent_file, file, transcription);
         } catch (error) {
             if (error instanceof UserCancelledError) {
                 new Notice("Transcription cancelled.");
+                return;
+            }
+            if (error instanceof UserSuspendedError) {
+                this.suspendedPipelines.push({
+                    parentFilePath: parent_file.path,
+                    pipelineFilePath: pipelineFile.path,
+                    autoWikilinkStepName: error.stepName ?? "auto_wikilink",
+                    taggedText: error.taggedText,
+                    selections: error.selections,
+                    fileTypeTags: error.fileTypeTags ?? {},
+                    scopedContext: error.scopedContext ?? {},
+                    suspendedAt: Date.now(),
+                });
+                new Notice("Dialog saved — run Transcribe to resume.");
                 return;
             }
             if (this.settings.debug) console.log(error);
@@ -187,6 +189,20 @@ export default class Transcription extends Plugin {
             name: "Transcribe",
             editorCallback: async (editor: Editor, view: MarkdownView) => {
                 if (view.file === null) return;
+
+                if (this.suspendedPipelines.length > 0) {
+                    new SuspendResumeModal(
+                        this.app,
+                        this.suspendedPipelines,
+                        (state) => this.resumeTranscription(state),
+                        (state) => {
+                            this.suspendedPipelines = this.suspendedPipelines.filter((s) => s !== state);
+                            new Notice("Pending dialog discarded.");
+                        },
+                    ).open();
+                    return;
+                }
+
                 const files = await this.getTranscribeableFiles(view.file);
                 if (files.length === 0) {
                     new Notice("No transcribable files found in view.");
@@ -255,6 +271,110 @@ export default class Transcription extends Plugin {
 
     async saveSettings() {
         await this.saveData(this.settings);
+    }
+
+    private async insertTranscriptionAfterLink(parentFile: TFile, audioFile: TFile, transcription: string): Promise<void> {
+        let fileText = await this.app.vault.read(parentFile);
+        const link = `[[${this.app.metadataCache.fileToLinktext(audioFile, parentFile.path)}]]`;
+        const insertIdx = fileText.indexOf(link) + link.length;
+        fileText = fileText.slice(0, insertIdx) + `\n${transcription}` + fileText.slice(insertIdx);
+        await this.app.vault.modify(parentFile, fileText);
+    }
+
+    private async resumeTranscription(state: SuspendedPipelineState): Promise<void> {
+        const parentFile = this.app.vault.getFileByPath(state.parentFilePath);
+        if (!parentFile) {
+            new Notice(`Cannot resume: parent file not found (${state.parentFilePath})`);
+            return;
+        }
+
+        // Remove from suspended list — will be re-added if the user suspends again
+        this.suspendedPipelines = this.suspendedPipelines.filter((s) => s !== state);
+
+        const abortController = new AbortController();
+        const task = (async () => {
+            try {
+                const transcription = await this.pipelineEngine.resumeFromSuspended(state);
+
+                if (abortController.signal.aborted) {
+                    new Notice("Transcription cancelled!");
+                    return;
+                }
+
+                const audioFile = this.app.vault.getFileByPath(state.scopedContext["input_file"] ?? "");
+                if (audioFile) {
+                    await this.insertTranscriptionAfterLink(parentFile, audioFile, transcription);
+                } else {
+                    await this.app.vault.modify(parentFile, await this.app.vault.read(parentFile) + `\n${transcription}`);
+                }
+            } catch (error) {
+                if (error instanceof UserCancelledError) {
+                    new Notice("Transcription cancelled.");
+                    return;
+                }
+                if (error instanceof UserSuspendedError) {
+                    this.suspendedPipelines.push({
+                        ...state,
+                        taggedText: error.taggedText,
+                        selections: error.selections,
+                        fileTypeTags: error.fileTypeTags ?? state.fileTypeTags,
+                        scopedContext: error.scopedContext ?? state.scopedContext,
+                        autoWikilinkStepName: error.stepName ?? state.autoWikilinkStepName,
+                        suspendedAt: Date.now(),
+                    });
+                    new Notice("Dialog saved — run Transcribe to resume.");
+                    return;
+                }
+                if (this.settings.debug) console.log(error);
+                new Notice(`Error resuming transcription: ${error}`, 10 * 1000);
+            }
+        })();
+        this.ongoingTranscriptionTasks.push({ task, abortController });
+    }
+}
+
+class SuspendResumeModal extends Modal {
+    constructor(
+        app: App,
+        private readonly states: SuspendedPipelineState[],
+        private readonly onResume: (state: SuspendedPipelineState) => void,
+        private readonly onDiscard: (state: SuspendedPipelineState) => void,
+    ) {
+        super(app);
+    }
+
+    onOpen(): void {
+        const { contentEl } = this;
+        contentEl.createEl("p", { text: "Pending wikilink dialogs:" });
+
+        for (const state of this.states) {
+            const row = contentEl.createDiv("suspend-resume-row");
+
+            const info = row.createDiv("suspend-resume-info");
+            const fileName = state.parentFilePath.split("/").pop() ?? state.parentFilePath;
+            info.createEl("span", { text: fileName, cls: "suspend-resume-filename" });
+            const date = new Date(state.suspendedAt).toLocaleString();
+            info.createEl("span", { text: date, cls: "suspend-resume-date" });
+
+            const buttons = row.createDiv("suspend-resume-buttons");
+
+            const resumeBtn = buttons.createEl("button", { text: "Resume" });
+            resumeBtn.addClass("mod-cta");
+            resumeBtn.onclick = () => {
+                this.close();
+                this.onResume(state);
+            };
+
+            const discardBtn = buttons.createEl("button", { text: "✕" });
+            discardBtn.title = "Discard";
+            discardBtn.onclick = () => {
+                this.onDiscard(state);
+                row.remove();
+                if (contentEl.querySelectorAll(".suspend-resume-row").length === 0) {
+                    this.close();
+                }
+            };
+        }
     }
 }
 

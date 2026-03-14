@@ -26,6 +26,31 @@ class FolderSuggest extends AbstractInputSuggest<TFolder> {
     }
 }
 
+export interface SuspendedSelection {
+    entity: {
+        canonicalName: string;
+        type: string;
+        occurrences: Array<{ sentence: string; displayName: string }>;
+    };
+    candidatePaths: string[];
+    /** SelectionConfidence value serialized as string */
+    confidence: string;
+    userChoice: "link" | "new" | "ignore";
+    chosenFilePath?: string;
+    newFileName?: string;
+}
+
+export interface SuspendedPipelineState {
+    parentFilePath: string;
+    pipelineFilePath: string;
+    autoWikilinkStepName: string;
+    taggedText: string;
+    selections: SuspendedSelection[];
+    fileTypeTags: Record<string, string[]>;
+    scopedContext: Record<string, string>;
+    suspendedAt: number;
+}
+
 interface TranscriptionSettings {
     debug: boolean;
     verbosity: number;

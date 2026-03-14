@@ -2,6 +2,7 @@ import { App, Modal, Notice, TFile, FuzzySuggestModal, TextComponent, FuzzyMatch
 import { SelectionConfidence } from "./engines/selectionConfidence";
 import type { EntityFileSelection } from "./engines/autoWikilinkEngine";
 import { EnrichedFile, UtilsEngine } from "./engines/utilsEngine";
+import type { SuspendedSelection } from "./settings";
 
 /**
  * @file
@@ -29,11 +30,13 @@ export class ResolveEntityModal extends Modal {
     private readonly fileTypeTags: Map<string, string[]>;
     private readonly utilsEngine: UtilsEngine;
     private readonly onComplete: (selections: EntityFileSelection[] | null) => void;
+    private readonly onSuspend?: (s: SuspendedSelection[]) => void;
     private isApplying: boolean = false;
-    private isCancelling: boolean = false;
+    private isClosing: boolean = false;
 
     private selectedFiles: (TFile | null)[] = [];
     private newFileComponents: (TextComponent | null)[] = [];
+    private choices: ("link" | "new" | "ignore")[] = [];
 
     constructor(
         app: App,
@@ -42,6 +45,7 @@ export class ResolveEntityModal extends Modal {
         fileTypeTags: Map<string, string[]>,
         utilsEngine: UtilsEngine,
         onComplete: (s: EntityFileSelection[] | null) => void,
+        onSuspend?: (s: SuspendedSelection[]) => void,
     ) {
         super(app);
         this.modalEl.addClass("resolve-entity-modal");
@@ -53,6 +57,7 @@ export class ResolveEntityModal extends Modal {
         this.fileTypeTags = fileTypeTags;
         this.utilsEngine = utilsEngine;
         this.onComplete = onComplete;
+        this.onSuspend = onSuspend;
         // Pre-populate with AI's selections so confirmed matches pass through untouched
         this.selectedFiles = this.selections.map((s) => s.selectedFile?.file ?? null);
         this.newFileComponents = new Array(this.selections.length).fill(null);
@@ -61,7 +66,7 @@ export class ResolveEntityModal extends Modal {
     onOpen(): void {
         if (this.selections.length === 0) {
             new Notice("No entities found.");
-            this.isCancelling = true;
+            this.isClosing = true;
             this.close();
             return;
         }
@@ -69,20 +74,48 @@ export class ResolveEntityModal extends Modal {
     }
 
     close(): void {
-        if (this.isApplying || this.isCancelling) {
+        if (this.isApplying || this.isClosing) {
             super.close();
             return;
         }
-        // Intercept close (X button, Escape, etc.) and ask for confirmation
-        new ConfirmCancelModal(this.app, () => {
-            this.isCancelling = true;
+        this.isClosing = true;
+        if (this.onSuspend) {
+            this.onSuspend(this.buildSuspendedSelections());
+        } else {
             this.onComplete(null);
-            super.close();
-        }).open();
+        }
+        super.close();
     }
 
     onClose(): void {
         // All paths are handled explicitly — nothing to do here
+    }
+
+    private buildSuspendedSelections(): SuspendedSelection[] {
+        return this.selections.map((sel, idx) => {
+            const userChoice = this.choices[idx] ?? "ignore";
+            return {
+                entity: {
+                    canonicalName: sel.entityWithFileCandidates.entity.canonicalName,
+                    type: sel.entityWithFileCandidates.entity.type,
+                    occurrences: sel.entityWithFileCandidates.entity.occurrences.map((o) => ({
+                        sentence: o.sentence,
+                        displayName: o.displayName,
+                    })),
+                },
+                candidatePaths: sel.entityWithFileCandidates.candidates.map(
+                    (c) => c.enrichedFile.file.path,
+                ),
+                confidence: sel.confidence,
+                userChoice,
+                chosenFilePath:
+                    userChoice === "link" ? (this.selectedFiles[idx]?.path ?? undefined) : undefined,
+                newFileName:
+                    userChoice === "new"
+                        ? (this.newFileComponents[idx]?.getValue().trim() || undefined)
+                        : undefined,
+            };
+        });
     }
 
     private render(): void {
@@ -163,18 +196,23 @@ export class ResolveEntityModal extends Modal {
                 const hasCandidates =
                     entitySel.entityWithFileCandidates.candidates &&
                     entitySel.entityWithFileCandidates.candidates.length > 0;
-                const shouldPreSelectLink = hasAiSelection || hasCandidates;
+                const shouldPreSelectNew = !!entitySel.newFile;
+                const shouldPreSelectLink = !shouldPreSelectNew && (hasAiSelection || hasCandidates);
+                const shouldPreSelectIgnore = !shouldPreSelectNew && !shouldPreSelectLink;
+
+                this.choices[idx] = shouldPreSelectNew ? "new" : shouldPreSelectLink ? "link" : "ignore";
 
                 const linkRadio = radioContainer.createEl("input", {
                     attr: { type: "radio", name: `choice-${idx}`, value: "link",
                         ...(shouldPreSelectLink ? { checked: "checked" } : {}) },
                 }) as HTMLInputElement;
                 const newRadio = radioContainer.createEl("input", {
-                    attr: { type: "radio", name: `choice-${idx}`, value: "new" },
+                    attr: { type: "radio", name: `choice-${idx}`, value: "new",
+                        ...(shouldPreSelectNew ? { checked: "checked" } : {}) },
                 }) as HTMLInputElement;
                 const ignoreRadio = radioContainer.createEl("input", {
                     attr: { type: "radio", name: `choice-${idx}`, value: "ignore",
-                        ...(!shouldPreSelectLink ? { checked: "checked" } : {}) },
+                        ...(shouldPreSelectIgnore ? { checked: "checked" } : {}) },
                 }) as HTMLInputElement;
 
                 // Segmented button row
@@ -206,7 +244,7 @@ export class ResolveEntityModal extends Modal {
                 const newInput = new TextComponent(fileArea);
                 newInput.inputEl.name = `input-new-${idx}`;
                 newInput.inputEl.placeholder = "File name…";
-                newInput.setValue(entitySel.entityWithFileCandidates.entity.canonicalName);
+                newInput.setValue(entitySel.newFile?.baseName ?? entitySel.entityWithFileCandidates.entity.canonicalName);
                 newInput.inputEl.addClass("resolve-entity-new-input");
                 this.newFileComponents[idx] = newInput;
 
@@ -242,19 +280,15 @@ export class ResolveEntityModal extends Modal {
                     newInput.inputEl.style.display = newRadio.checked ? "block" : "none";
                 };
 
-                linkSegment.onclick = () => { linkRadio.checked = true; updateVisibility(); };
-                newSegment.onclick = () => { newRadio.checked = true; updateVisibility(); };
-                ignoreSegment.onclick = () => { ignoreRadio.checked = true; updateVisibility(); };
+                linkSegment.onclick = () => { linkRadio.checked = true; this.choices[idx] = "link"; updateVisibility(); };
+                newSegment.onclick = () => { newRadio.checked = true; this.choices[idx] = "new"; updateVisibility(); };
+                ignoreSegment.onclick = () => { ignoreRadio.checked = true; this.choices[idx] = "ignore"; updateVisibility(); };
 
                 updateVisibility();
             }
         }
 
         const controls = contentEl.createDiv("resolve-entity-controls");
-
-        const cancelBtn = controls.createEl("button", { text: "Cancel" });
-        cancelBtn.type = "button";
-        cancelBtn.onclick = () => this.close();
 
         const applyBtn = controls.createEl("button", { text: "Apply" });
         applyBtn.type = "submit";
@@ -297,29 +331,6 @@ export class ResolveEntityModal extends Modal {
 
         this.onComplete(this.selections);
         this.close();
-    }
-}
-
-class ConfirmCancelModal extends Modal {
-    constructor(app: App, private readonly onConfirm: () => void) {
-        super(app);
-        this.modalEl.addClass("resolve-entity-confirm-modal");
-    }
-
-    onOpen(): void {
-        const { contentEl } = this;
-        contentEl.createEl("p", { text: "Cancel linking? No wikilinks will be written." });
-
-        const buttons = contentEl.createDiv("resolve-entity-confirm-buttons");
-
-        const goBackBtn = buttons.createEl("button", { text: "Keep editing" });
-        goBackBtn.onclick = () => this.close();
-
-        const confirmBtn = buttons.createEl("button", { text: "Cancel (no links)" });
-        confirmBtn.onclick = () => {
-            this.close();
-            this.onConfirm();
-        };
     }
 }
 
