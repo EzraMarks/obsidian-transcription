@@ -16,24 +16,19 @@ export class AudioTranscriptionEngine {
     }
 
     async transcribe(file: TFile): Promise<string> {
-        const { openaiKey } = this.settings;
         const fileContent = await this.vault.readBinary(file);
-
         const formData = new FormData();
         formData.append("file", new Blob([fileContent]), file.name);
-        formData.append("model", "gpt-4o-transcribe");
+        formData.append("model", "whisper-1");
 
         const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
             method: "POST",
-            headers: { Authorization: `Bearer ${openaiKey}` },
+            headers: { Authorization: `Bearer ${this.settings.openaiKey}` },
             body: formData,
         });
 
-        if (!response.ok) {
-            throw new Error(`Transcription API error: ${response.status}`);
-        }
-
+        if (!response.ok) throw new Error(`Transcription API error: ${response.status}`);
         const { text } = await response.json();
-        return text;
+        return text ?? "";
     }
 }
