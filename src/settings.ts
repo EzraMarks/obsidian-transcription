@@ -159,10 +159,10 @@ class TranscriptionSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName("Date created frontmatter field")
-            .setDesc("Frontmatter field written when creating new notes via the wikilink dialog (e.g. 'date_created').")
+            .setDesc("Frontmatter field written with today's date when creating new notes via the wikilink dialog. Leave blank to omit.")
             .addText((text) =>
                 text
-                    .setPlaceholder("e.g. date_created")
+                    .setPlaceholder("e.g. date_created (leave blank to omit)")
                     .setValue(this.plugin.settings.dateCreatedFrontmatterField)
                     .onChange(async (value) => {
                         this.plugin.settings.dateCreatedFrontmatterField = value.trim();
