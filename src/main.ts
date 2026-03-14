@@ -11,9 +11,9 @@ import {
     Menu,
 } from "obsidian";
 import { StatusBar } from "./status";
-import { TranscriptionSettings, DEFAULT_SETTINGS, TranscriptionSettingTab, SuspendedPipelineState } from "./settings";
+import { TranscriptionSettings, DEFAULT_SETTINGS, TranscriptionSettingTab } from "./settings";
 import { PipelineEngine } from "./pipelineEngine";
-import { UserCancelledError, UserSuspendedError } from "./engines/autoWikilinkEngine";
+import { UserCancelledError, UserSuspendedError, SuspendedPipelineState } from "./engines/autoWikilinkEngine";
 import { TranscriptionModal } from "./transcriptionModal";
 import { TestServer } from "./testServer";
 

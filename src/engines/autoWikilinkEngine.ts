@@ -1,5 +1,5 @@
 import { TFile, Vault, App } from "obsidian";
-import { TranscriptionSettings, SuspendedSelection, SuspendedPipelineState } from "src/settings";
+import { TranscriptionSettings } from "src/settings";
 import { StatusBar } from "../status";
 import levenshtein from "js-levenshtein";
 import { z } from "zod";
@@ -24,7 +24,6 @@ export interface EntityTypeConfig {
 export interface EntityOccurrence {
     header: string | null | undefined;
     displayName: string;
-    displayNamePhoneticEncoding: PhoneticEncoding;
     sentence: string;
 }
 
@@ -75,6 +74,28 @@ export class UserCancelledError extends Error {
         super("User cancelled");
         this.name = "UserCancelledError";
     }
+}
+
+export interface SuspendedSelection {
+    entity: ExtractedEntity;
+    candidatePaths: string[];
+    confidence: SelectionConfidence;
+    userChoice: "link" | "new" | "ignore";
+    chosenFilePath?: string;
+    newFileName?: string;
+    addMisspelling?: boolean;
+    preferredDisplayName?: string;
+}
+
+export interface SuspendedPipelineState {
+    parentFilePath: string;
+    pipelineFilePath: string;
+    autoWikilinkStepName: string;
+    taggedText: string;
+    selections: SuspendedSelection[];
+    fileTypeTags: Record<string, string[]>;
+    scopedContext: Record<string, string>;
+    suspendedAt: number;
 }
 
 export class UserSuspendedError extends Error {
@@ -345,26 +366,11 @@ export class AutoWikilinkEngine {
                     ? { baseName: saved.newFileName }
                     : undefined;
 
-            const entity: ExtractedEntity = {
-                canonicalName: saved.entity.canonicalName,
-                type: saved.entity.type,
-                occurrences: saved.entity.occurrences.map((o) => ({
-                    header: null,
-                    displayName: o.displayName,
-                    displayNamePhoneticEncoding: {
-                        displayName: o.displayName,
-                        soundexEncoding: "",
-                        metaphoneEncodings: [],
-                    },
-                    sentence: o.sentence,
-                })),
-            };
-
             return {
-                entityWithFileCandidates: { entity, candidates },
+                entityWithFileCandidates: { entity: saved.entity, candidates },
                 selectedFile,
                 newFile,
-                confidence: saved.confidence as SelectionConfidence,
+                confidence: saved.confidence,
                 addMisspelling: saved.addMisspelling,
                 preferredDisplayName: saved.preferredDisplayName,
             };
@@ -487,7 +493,6 @@ export class AutoWikilinkEngine {
                 const occurrence: EntityOccurrence = {
                     header: redactedHeader,
                     displayName: rawText,
-                    displayNamePhoneticEncoding: getPhoneticEncoding(rawText),
                     sentence: redactedSentence,
                 };
 
@@ -583,12 +588,10 @@ export class AutoWikilinkEngine {
             const extractedSentence = extractSentence(lineText, col).trim();
             const redactedSentence = this.redactVaultTextForLlm(extractedSentence, sortedNamesToRedact);
             const displayName = backlinkEntry.reference.displayText ?? backlinkEntry.reference.link;
-            const displayNamePhoneticEncoding = getPhoneticEncoding(displayName);
 
             return {
                 header: redactedHeader,
                 displayName,
-                displayNamePhoneticEncoding,
                 sentence: redactedSentence,
             };
         }

@@ -3,7 +3,7 @@ import { SelectionConfidence } from "./engines/selectionConfidence";
 import type { EntityFileSelection } from "./engines/autoWikilinkEngine";
 import { tryCorrectSpelling } from "./engines/autoWikilinkEngine";
 import { EnrichedFile, UtilsEngine } from "./engines/utilsEngine";
-import type { SuspendedSelection } from "./settings";
+import type { SuspendedSelection } from "./engines/autoWikilinkEngine";
 
 /**
  * @file
@@ -101,14 +101,7 @@ export class ResolveEntityModal extends Modal {
         return this.selections.map((sel, idx) => {
             const userChoice = this.choices[idx] ?? "ignore";
             return {
-                entity: {
-                    canonicalName: sel.entityWithFileCandidates.entity.canonicalName,
-                    type: sel.entityWithFileCandidates.entity.type,
-                    occurrences: sel.entityWithFileCandidates.entity.occurrences.map((o) => ({
-                        sentence: o.sentence,
-                        displayName: o.displayName,
-                    })),
-                },
+                entity: sel.entityWithFileCandidates.entity,
                 candidatePaths: sel.entityWithFileCandidates.candidates.map(
                     (c) => c.enrichedFile.file.path,
                 ),
